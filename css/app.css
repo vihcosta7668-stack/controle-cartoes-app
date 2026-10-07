@@ -62,12 +62,14 @@ main { padding: 16px 16px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line);
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(var(--nav-n, 5), 1fr);
 }
 .nav button {
   border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px; font-size: 11px; color: var(--ink-3); cursor: pointer; padding: 6px 2px; position: relative;
 }
+.nav.n7 button { font-size: 10px; letter-spacing: -.01em; padding: 6px 0; }
+.nav.n7 button span:not(.badge-dot) { white-space: nowrap; }
 .nav button svg { width: 22px; height: 22px; }
 .nav button[aria-current="page"] { color: var(--accent); font-weight: 600; }
 .nav .badge-dot { position: absolute; top: 8px; right: calc(50% - 18px); min-width: 16px; height: 16px; border-radius: 8px; background: var(--bad); color: #fff; font-size: 10px; line-height: 16px; padding: 0 4px; }
@@ -238,3 +240,17 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--surfa
 .vazio { text-align: center; color: var(--ink-3); padding: 22px 8px; font-size: 14px; }
 .so-desk { display: none; }
 @media (min-width: 900px) { .so-desk { display: initial; } }
+
+/* ---------- casa e viagens ---------- */
+.barra .w { background: var(--warn); }
+.barra .b { background: var(--bad); }
+.veredito { border-radius: var(--r-sm); padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start; }
+.veredito.ok { background: var(--ok-soft); } .veredito.warn { background: var(--warn-soft); } .veredito.bad { background: var(--bad-soft); }
+.veredito b.t { display: block; font-size: 16px; }
+.veredito.ok b.t { color: var(--ok); } .veredito.warn b.t { color: var(--warn); } .veredito.bad b.t { color: var(--bad); }
+table.t tr.warn td.sobra { color: var(--warn); font-weight: 650; }
+table.t tr.bad td.sobra { color: var(--bad); font-weight: 650; }
+.membros { display: grid; gap: 10px; }
+@media (min-width: 700px) { .membros { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.chips button { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); }
+.chips button svg { width: 14px; height: 14px; flex: none; }

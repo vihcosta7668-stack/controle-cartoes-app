@@ -1,10 +1,11 @@
-import { Store, ErroConflito } from './store.js';
+import { Store, ErroConflito, CHAVES_COMPARTILHADO } from './store.js';
 import {
   hoje as hojeISO, brl, num, dataBR, diaMes, mesCurto, difDias, addMeses, round2, cents, parseValor,
   detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
 } from './util.js';
 import * as C from './calc.js';
-import { parseNubankCSV, parseItauPages, lerPaginasPDF } from './parsers.js';
+import { parseNubankCSV, parsePDFFatura, lerPaginasPDF } from './parsers.js';
+import * as PL from './planos.js';
 import { importarFatura } from './importer.js';
 import { esc, icon, toast, abrirModal, fecharModal, cabecalhoModal, chipCartao, graficoBarras, ligarGraficos } from './ui.js';
 
@@ -13,6 +14,9 @@ const S = {
   store: new Store(), dados: null, view: 'resumo', hoje: hojeISO(),
   fat: { cartao: null, venc: null, filtro: 'todos' }, abertos: new Set(), verPagos: new Set(), grupoSel: null,
   sync: 'ok', timer: null, msgSalvar: '', ocultoEm: null,
+  // casa e viagens: arquivo compartilhado num repositório à parte, com token próprio (mesmo PIN)
+  comp: { store: new Store(CHAVES_COMPARTILHADO), dados: null, sync: 'ok', timer: null, fila: [], msg: '', erro: '' },
+  viagemSel: null,
 };
 const app = document.getElementById('app');
 
@@ -20,22 +24,26 @@ const app = document.getElementById('app');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) S.ocultoEm = Date.now();
-  else if (S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { S.store.bloquear(); S.dados = null; fecharModal(); telaPin(); }
-  else if (S.dados) { const h = hojeISO(); if (h !== S.hoje) { S.hoje = h; render(); } }
+  else if (S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; fecharModal(); telaPin(); }
+  else if (S.dados) { const h = hojeISO(); if (h !== S.hoje) { S.hoje = h; render(); } carregarComp(); }
 });
-window.addEventListener('online', () => { if (S.sync === 'pendente') salvarAgora(); });
+window.addEventListener('online', () => { if (S.sync === 'pendente') salvarAgora(); if (S.comp.sync === 'pendente') salvarComp(); });
 
 if (!S.store.configurado) telaConfig(); else telaPin();
 
-function dadosVazios() {
+// Cartões que o app sabe ler. Fechamento/vencimento são o ponto de partida; cada um ajusta em Ajustes.
+const CARTOES_MODELO = {
+  nubank: { id: 'nubank', nome: 'Nubank', fechamento: 11, vencimento: 18, cor: '#820ad1', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Nubank' } },
+  itau: { id: 'itau', nome: 'Itaú', fechamento: 29, vencimento: 5, cor: '#ec7000', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Itaú' } },
+  mercadopago: { id: 'mercadopago', nome: 'Mercado Pago', fechamento: 5, vencimento: 10, cor: '#00a6e0', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Mercado Pago' } },
+};
+const formatoFatura = (c) => (c.id === 'nubank' ? 'CSV' : 'PDF');
+function dadosVazios(ids = ['nubank', 'itau']) {
   return {
     versao: 1, atualizadoEm: new Date().toISOString(),
     pessoas: [{ id: EU, nome: 'Eu', telefone: '' }],
-    cartoes: [
-      { id: 'nubank', nome: 'Nubank', fechamento: 11, vencimento: 18, cor: '#820ad1', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Nubank' } },
-      { id: 'itau', nome: 'Itaú', fechamento: 29, vencimento: 5, cor: '#ec7000', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Itaú' } },
-    ],
-    regras: [], faturas: [], lancamentos: [], grupos: [], cobrancas: [], config: { diasAntesCobranca: 2 },
+    cartoes: ids.filter((id) => CARTOES_MODELO[id]).map((id) => structuredClone(CARTOES_MODELO[id])),
+    regras: [], faturas: [], lancamentos: [], grupos: [], cobrancas: [], config: { diasAntesCobranca: 2 }, orcamento: null,
   };
 }
 
@@ -60,6 +68,15 @@ function telaConfig(erro = '') {
         <label class="campo"><span>PIN deste aparelho</span><input class="inp" name="pin" type="password" inputmode="numeric" minlength="6" required></label>
         <label class="campo"><span>Repita o PIN</span><input class="inp" name="pin2" type="password" inputmode="numeric" minlength="6" required></label>
       </div>
+      <details class="small"${erro && /compartilhad|casa/i.test(erro) ? ' open' : ''}><summary class="muted">Casa e viagens (repositório compartilhado do casal — opcional)</summary>
+        <p class="tiny muted">Fica numa organização do GitHub da qual vocês dois fazem parte. Use um token separado, criado com a organização como dono, só com esse repositório.</p>
+        <div class="lado" style="margin-top:10px">
+          <label class="campo"><span>Organização</span><input class="inp" name="comp_owner" autocapitalize="off" spellcheck="false"></label>
+          <label class="campo"><span>Repositório</span><input class="inp" name="comp_repo" value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label>
+        </div>
+        <label class="campo"><span>Token da organização (github_pat_…)</span><input class="inp" name="comp_token" type="password" autocapitalize="off" spellcheck="false"></label>
+        <label class="campo"><span>Seu nome (como o outro vai te ver)</span><input class="inp" name="comp_nome"></label>
+      </details>
       <details class="small"><summary class="muted">Avançado</summary>
         <div class="lado" style="margin-top:10px">
           <label class="campo"><span>Branch</span><input class="inp" name="branch" value="main"></label>
@@ -75,7 +92,12 @@ function telaConfig(erro = '') {
     const f = Object.fromEntries(new FormData(e.target));
     if (f.pin !== f.pin2) return telaConfig('Os PINs não são iguais.');
     const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Conectando…';
-    try { await S.store.configurar(f); await carregarDados(); } catch (err) { S.store.sair(); telaConfig(err.message); }
+    try { await S.store.configurar(f); } catch (err) { S.store.sair(); return telaConfig(err.message); }
+    if (f.comp_owner?.trim() || f.comp_token?.trim()) {
+      try { await configurarComp({ owner: f.comp_owner, repo: f.comp_repo, token: f.comp_token, nome: f.comp_nome, pin: f.pin }); }
+      catch (err) { S.store.sair(); S.comp.store.sair(); return telaConfig(`Casa e viagens: ${err.message}`); }
+    }
+    await carregarDados();
   });
 }
 
@@ -97,10 +119,12 @@ function telaPin(erro = '') {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Abrindo…';
-    try { await S.store.desbloquear(f.pin.value); await carregarDados(); } catch (err) { telaPin(err.message); }
+    try { await S.store.desbloquear(f.pin.value); } catch (err) { return telaPin(err.message); }
+    if (S.comp.store.configurado) { try { await S.comp.store.desbloquear(f.pin.value); } catch { toast('Casa e viagens: o PIN deste aparelho não abriu o acesso compartilhado. Reconecte em Ajustes.', 5000); } }
+    await carregarDados();
   });
   document.getElementById('b-esqueci').addEventListener('click', () => {
-    if (confirm('Isso apaga o acesso salvo neste aparelho (os dados no GitHub não são afetados). Continuar?')) { S.store.sair(); telaConfig(); }
+    if (confirm('Isso apaga o acesso salvo neste aparelho (os dados no GitHub não são afetados). Continuar?')) { S.store.sair(); S.comp.store.sair(); telaConfig(); }
   });
 }
 
@@ -116,7 +140,8 @@ async function carregarDados() {
     const { dados } = await S.store.carregar();
     if (!dados) {
       S.dados = dadosVazios(); render();
-      abrirModal(`${cabecalhoModal('Primeiro acesso')}<p>Não encontrei <b>${esc(S.store.cfg.path)}</b> no repositório. Vou criar um arquivo novo, vazio, com Nubank e Itaú já cadastrados.</p>
+      abrirModal(`${cabecalhoModal('Primeiro acesso')}<p>Não encontrei <b>${esc(S.store.cfg.path)}</b> no repositório. Vou criar um arquivo novo, vazio. Quais cartões você usa?</p>
+        <div class="pilha">${Object.values(CARTOES_MODELO).map((c) => `<label class="check"><input type="checkbox" data-novo-cartao="${c.id}" ${c.id !== 'mercadopago' ? 'checked' : ''}> ${esc(c.nome)} <span class="tiny muted">(fatura em ${formatoFatura(c)})</span></label>`).join('')}</div>
         <p class="small muted">Se você tem o dados.json inicial que veio com o app, suba ele no repositório antes e toque em Recarregar.</p>
         <div class="modal-f"><button class="btn" data-act="recarregar">Recarregar</button><button class="btn pri" data-act="criar-dados">Criar arquivo</button></div>`);
       return;
@@ -127,9 +152,10 @@ async function carregarDados() {
     else { app.innerHTML = `<div class="acesso"><p class="erro-txt">${esc(err.message)}</p><button class="btn" data-act="recarregar-pagina">Tentar de novo</button></div>`; return; }
   }
   render();
+  carregarComp();
 }
 function migrar(d) {
-  d.cobrancas ||= []; d.grupos ||= []; d.regras ||= []; d.faturas ||= []; d.config ||= { diasAntesCobranca: 2 };
+  d.cobrancas ||= []; d.grupos ||= []; d.regras ||= []; d.faturas ||= []; d.config ||= { diasAntesCobranca: 2 }; d.orcamento ??= null;
   if (!d.pessoas.some((p) => p.id === EU)) d.pessoas.unshift({ id: EU, nome: 'Eu', telefone: '' });
   return d;
 }
@@ -164,19 +190,105 @@ function resolverConflito() {
 }
 function atualizarSync() {
   const el = document.querySelector('.sync'); if (!el) return;
-  const t = { ok: 'Salvo', salvando: 'Salvando…', pendente: 'Não enviado', erro: 'Sem sincronizar' }[S.sync];
-  el.className = 'sync ' + S.sync; el.textContent = t;
+  const st = ['casa', 'viagens'].includes(S.view) && S.comp.store.configurado ? S.comp.sync : S.sync;
+  const t = { ok: 'Salvo', salvando: 'Salvando…', pendente: 'Não enviado', erro: 'Sem sincronizar' }[st];
+  el.className = 'sync ' + st; el.textContent = t;
+}
+
+// ======================= casa e viagens: sincronização =======================
+// O arquivo compartilhado é editado pelos dois. Cada alteração é guardada como função (fila):
+// se o outro salvou antes, o app baixa a versão nova, reaplica a fila e tenta de novo.
+const euId = () => slug(S.comp.store.cfg?.eu || '');
+
+async function configurarComp({ owner, repo, token, nome, pin }) {
+  if (!String(nome || '').trim()) throw new Error('Informe seu nome.');
+  if (!String(owner || '').trim() || !String(token || '').trim()) throw new Error('Informe a organização e o token.');
+  await S.comp.store.configurar({ owner, repo: repo || 'casa-viagens-dados', path: 'compartilhado.json', token, pin, extra: { eu: String(nome).trim() } });
+}
+
+async function carregarComp({ forcar = false } = {}) {
+  const c = S.comp; const st = c.store;
+  if (!st.configurado || !st.desbloqueado) return;
+  if (!forcar && (c.fila.length || c.sync === 'salvando' || c.sync === 'pendente')) return;
+  if (!c.dados) {
+    const cache = await st.lerCache();
+    if (cache?.pendente) { c.dados = PL.migrarCompartilhado(cache.dados); st.sha = cache.sha; c.sync = 'pendente'; redesenhar(); salvarComp(); return; }
+  }
+  try {
+    const { dados } = await st.carregar();
+    c.erro = '';
+    if (!dados) { // primeiro acesso: cria o arquivo com as etapas padrão da obra
+      c.dados = PL.compartilhadoVazio(st.cfg.eu); st.sha = null; c.msg = 'app: compartilhado.json criado'; c.sync = 'salvando';
+      redesenhar(); await salvarComp(); return;
+    }
+    const mudou = !c.dados || c.dados.atualizadoEm !== dados.atualizadoEm;
+    c.dados = PL.migrarCompartilhado(dados); c.sync = 'ok';
+    if (!PL.membroPorId(c.dados, euId())) mutarComp((dd) => { if (!PL.membroPorId(dd, euId())) dd.membros.push({ id: euId(), nome: st.cfg.eu }); }, 'app: novo membro');
+    else if (mudou) redesenhar();
+  } catch (err) {
+    const cache = await st.lerCache();
+    if (!c.dados && cache?.dados) { c.dados = PL.migrarCompartilhado(cache.dados); c.sync = 'erro'; }
+    c.erro = err.message; redesenhar();
+  }
+}
+function redesenhar() { if (S.dados && ['casa', 'viagens'].includes(S.view)) { S.manterScroll = true; render(); } else atualizarSync(); }
+
+function mutarComp(fn, msg) {
+  const c = S.comp;
+  const novo = structuredClone(c.dados); fn(novo);
+  c.dados = novo; c.fila.push(fn); c.msg = msg || 'app: atualização';
+  c.sync = 'salvando'; S.manterScroll = true; render();
+  clearTimeout(c.timer); c.timer = setTimeout(salvarComp, 700);
+}
+async function salvarComp() {
+  const c = S.comp; clearTimeout(c.timer);
+  if (c.emVoo) { c.denovo = true; return; } // um envio por vez; o próximo sai em seguida
+  c.emVoo = true;
+  try {
+    for (let tentativa = 0; ; tentativa++) {
+      c.denovo = false;
+      const enviadas = c.fila.length;
+      try {
+        await c.store.salvar(c.dados, c.msg);
+        c.fila = c.fila.slice(enviadas);
+        c.sync = c.fila.length ? 'salvando' : 'ok';
+        if (!c.fila.length && !c.denovo) break;
+        continue; // houve alteração durante o envio
+      } catch (err) {
+        if (err instanceof ErroConflito && c.fila.length && tentativa < 4) {
+          try {
+            const { dados } = await c.store.carregar();
+            const base = PL.migrarCompartilhado(dados || PL.compartilhadoVazio(c.store.cfg.eu));
+            for (const fn of c.fila) fn(base);
+            c.dados = base;
+            continue;
+          } catch { /* sem conexão: fica pendente */ }
+        }
+        if (err instanceof ErroConflito && !c.fila.length) { c.sync = 'erro'; resolverConflitoComp(); }
+        else { c.sync = 'pendente'; await c.store.marcarPendente(c.dados); toast('Casa e viagens: não consegui salvar no GitHub. Fica guardado aqui e envio quando a conexão voltar.', 4000); }
+        break;
+      }
+    }
+  } finally { c.emVoo = false; }
+  redesenhar();
+}
+function resolverConflitoComp() {
+  abrirModal(`${cabecalhoModal('Casa e viagens mudaram em outro aparelho')}
+    <p>Este aparelho tem alterações feitas sem internet, e o arquivo compartilhado também foi alterado (por você em outro aparelho ou pela outra pessoa).</p>
+    <div class="modal-f"><button class="btn" data-act="comp-usar-github">Usar os do GitHub</button><button class="btn pri" data-act="comp-manter-local">Manter os daqui</button></div>
+    <p class="tiny muted">"Usar os do GitHub" descarta o que foi feito aqui sem internet. "Manter os daqui" sobrescreve o que foi feito lá.</p>`);
 }
 
 // ======================= estrutura =======================
 const NAV = [
   ['resumo', 'Resumo', 'home'], ['faturas', 'Faturas', 'card'], ['pessoas', 'Me devem', 'people'], ['grupos', 'Grupos', 'group'], ['futuro', 'Futuro', 'chart'],
+  ['casa', 'Casa', 'obra'], ['viagens', 'Viagens', 'aviao'],
 ];
 function render() {
   if (!S.dados) return;
   const cobr = C.cobrancasDevidas(S.dados, S.hoje, S.dados.config?.diasAntesCobranca ?? 2).length;
-  const views = { resumo: vResumo, faturas: vFaturas, pessoas: vPessoas, grupos: vGrupos, futuro: vFuturo, ajustes: vAjustes };
-  const titulo = { resumo: 'Resumo', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', ajustes: 'Ajustes' }[S.view];
+  const views = { resumo: vResumo, faturas: vFaturas, pessoas: vPessoas, grupos: vGrupos, futuro: vFuturo, casa: vCasa, viagens: vViagens, ajustes: vAjustes };
+  const titulo = { resumo: 'Resumo', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', casa: 'Nossa casa', viagens: 'Viagens', ajustes: 'Ajustes' }[S.view];
   const navBtn = ([id, nome, ic]) => `<button data-act="nav" data-arg="${id}" ${S.view === id ? 'aria-current="page"' : ''}>${icon(ic)}<span>${nome}</span>${id === 'pessoas' && cobr ? `<span class="badge-dot">${cobr}</span>` : ''}</button>`;
   const y = window.scrollY;
   app.innerHTML = `<div class="shell">
@@ -194,7 +306,7 @@ function render() {
       </header>
       <main class="pilha">${views[S.view]()}</main>
     </div>
-    <nav class="nav" aria-label="Menu">${NAV.map(navBtn).join('')}</nav>
+    <nav class="nav ${NAV.length > 5 ? 'n7' : ''}" style="--nav-n:${NAV.length}" aria-label="Menu">${NAV.map(navBtn).join('')}</nav>
   </div>`;
   atualizarSync(); ligarGraficos(app);
   if (S.manterScroll) window.scrollTo(0, y); S.manterScroll = false;
@@ -240,7 +352,7 @@ function faturasEmAberto(c) { // fechadas sem pagamento completo (últimos 3 mes
 function vResumo() {
   const d = S.dados;
   if (!d.lancamentos.length) {
-    return `<div class="card vazio pilha"><p>Nenhuma fatura ainda. Importe o CSV do Nubank ou o PDF do Itaú para começar.</p>
+    return `<div class="card vazio pilha"><p>Nenhuma fatura ainda. Importe a fatura (CSV do Nubank, PDF do Itaú ou do Mercado Pago) para começar.</p>
       <button class="btn pri" data-act="importar">${icon('upload')} Importar fatura</button></div>`;
   }
   const res = d.cartoes.map((c) => ({ c, r: C.resumoFatura(d, c.id, C.faturaAberta(c, S.hoje), S.hoje), abertas: faturasEmAberto(c) }));
@@ -324,7 +436,7 @@ function vFaturas() {
       ${vencs.map((v) => `<option value="${v}" ${v === r.venc ? 'selected' : ''}>Vence ${dataBR(v)}${v === C.faturaAberta(c, S.hoje) ? ' (aberta)' : ''}</option>`).join('')}
     </select>
   </div>
-  <div class="row wrap"><button class="btn pri" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar ${c.id === 'itau' ? 'PDF' : 'CSV'}</button><button class="btn" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar compra</button></div>
+  <div class="row wrap"><button class="btn pri" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar ${formatoFatura(c)}</button><button class="btn" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar compra</button></div>
   <section class="card">
     <div class="card-h">${chipCartao(c)} ${estadoTag}<span class="small muted grow">fecha ${dataBR(r.fechamento)} · ${quando(r.venc)}</span></div>
     <div class="grid g4">
@@ -356,7 +468,7 @@ function vFaturas() {
       <div class="seg">${[['todos', 'Todos'], ['meus', 'Meus'], ['outros', 'Dos outros']].map(([k, t]) => `<button data-act="fat-filtro" data-arg="${k}" aria-pressed="${filtro === k}">${t}</button>`).join('')}</div></div>
     <ul class="lista">${lanc.map(linha).join('') || '<li class="vazio">Nada lançado nesta fatura.</li>'}</ul>
     ${prev.length ? `<div class="sec-tit">Previsto — parcelas e fixos que devem cair</div>
-      <p class="tiny muted" style="margin:0 0 4px">Já contam no total e em "Me devem". ${c.id === 'itau' || (d.faturas || []).some((f) => f.cartao === c.id && f.origem === 'pdf') ? `Viram lançamentos quando você importar o PDF desta fatura (depois do fechamento em ${dataBR(r.fechamento)}).` : 'Viram lançamentos quando você importar o CSV de novo.'} Toque para dizer de quem é; gasto fixo dá para trocar de cartão ou cancelar.</p>
+      <p class="tiny muted" style="margin:0 0 4px">Já contam no total e em "Me devem". ${formatoFatura(c) === 'PDF' || (d.faturas || []).some((f) => f.cartao === c.id && f.origem === 'pdf') ? `Viram lançamentos quando você importar o PDF desta fatura (depois do fechamento em ${dataBR(r.fechamento)}).` : 'Viram lançamentos quando você importar o CSV de novo.'} Toque para dizer de quem é; gasto fixo dá para trocar de cartão ou cancelar.</p>
       <ul class="lista">${prev.map(linha).join('')}</ul>` : ''}
   </section>`;
 }
@@ -511,11 +623,177 @@ function vFuturo() {
   </section>`;
 }
 
+// ======================= CASA e VIAGENS (compartilhado) =======================
+function compIndisponivel() {
+  const c = S.comp;
+  if (!c.store.configurado) {
+    return `<div class="card pilha"><h2>Casa e viagens ficam num arquivo do casal</h2>
+      <p class="small" style="margin:6px 0 0">As faturas continuam só suas. Casa e viagens ficam num repositório à parte, que vocês dois acessam, cada um com o próprio token.</p>
+      <button class="btn pri" data-act="nav" data-arg="ajustes">Conectar em Ajustes</button></div>`;
+  }
+  if (!c.store.desbloqueado) return '<div class="card vazio">O PIN deste aparelho não abriu o acesso a casa e viagens. Reconecte em Ajustes.</div>';
+  if (!c.dados) {
+    return c.erro ? `<div class="card pilha"><p class="erro-txt">${esc(c.erro)}</p><button class="btn" data-act="comp-recarregar">${icon('refresh')} Tentar de novo</button></div>`
+      : '<div class="card vazio">Buscando casa e viagens…</div>';
+  }
+  return null;
+}
+const nomeM = (id) => PL.nomeMembro(S.comp.dados, id);
+const atualizadoComp = () => `<div class="row wrap"><span class="tiny muted grow">Você está como <b>${esc(S.comp.store.cfg.eu)}</b>${S.comp.erro ? ` · <span class="erro-txt">${esc(S.comp.erro)}</span>` : ''}</span><button class="btn sm ghost" data-act="comp-recarregar">${icon('refresh')} Atualizar</button></div>`;
+
+function vCasa() {
+  const ind = compIndisponivel(); if (ind) return ind;
+  const comp = S.comp.dados; const r = PL.resumoCasa(comp); const eu = euId();
+  const pctPago = r.previstoTotal > 0 ? Math.min(1, r.pagoTotal / r.previstoTotal) : 0;
+  const estadoTag = { concluida: '<span class="tag ok">concluída</span>', andamento: '<span class="tag info">em andamento</span>', apagar: '' };
+  return `${atualizadoComp()}
+  <div class="grid g4">
+    <div class="card kpi"><div class="rot">Guardado (total)</div><div class="val">${brl(r.guardado)}</div><div class="sub">${r.saldos.map((x) => `${esc(x.membro.nome.split(' ')[0])} ${brl(x.valor)}`).join(' · ') || '—'}</div></div>
+    <div class="card kpi"><div class="rot">Custo previsto da obra</div><div class="val">${brl(r.previstoTotal)}</div><div class="sub">${r.semPrevisto ? `${r.semPrevisto} etapa${r.semPrevisto > 1 ? 's' : ''} sem valor` : 'todas as etapas com valor'}</div></div>
+    <div class="card kpi"><div class="rot">Já pago</div><div class="val">${brl(r.pagoTotal)}</div><div class="sub">${r.previstoTotal > 0 ? `${Math.round(pctPago * 100)}% do previsto` : ''}</div></div>
+    <div class="card kpi"><div class="rot">Falta pagar</div><div class="val">${brl(r.faltaTotal)}</div><div class="sub">${r.faltaTotal > 0 ? (r.guardado >= r.faltaTotal ? 'o guardado cobre' : `faltam ${brl(r.faltaTotal - r.guardado)} além do guardado`) : ''}</div></div>
+  </div>
+  <section class="card">
+    <div class="card-h"><h2>Quanto cada um tem guardado</h2><button class="btn sm pri" data-act="casa-saldo">Atualizar meu saldo</button></div>
+    <div class="barra" style="margin-bottom:8px">${r.saldos.map((x, i) => (r.guardado > 0 ? `<span class="${i ? 'o' : 'm'}" style="width:${(x.valor / r.guardado) * 100}%"></span>` : '')).join('')}</div>
+    <div class="membros">${r.saldos.map((x, i) => `<div class="card plano" style="background:var(--surface-2)">
+      <div class="spread"><b style="color:var(${i ? '--s-outros' : '--s-minha'})">${esc(x.membro.nome)}${x.membro.id === eu ? ' <span class="tag">você</span>' : ''}</b><span class="num" style="font-size:19px;font-weight:680">${brl(x.valor)}</span></div>
+      <div class="tiny muted" style="margin-top:4px">${x.data ? `informado em ${dataBR(x.data)}` : 'ainda não informou'}${r.guardado > 0 ? ` · ${Math.round((x.valor / r.guardado) * 100)}% do total` : ''}</div>
+      ${x.variacao != null ? `<div class="small" style="margin-top:4px">${x.variacao >= 0 ? 'guardou' : 'saiu'} <b>${brl(Math.abs(x.variacao))}</b> desde ${dataBR(x.anterior.data)}</div>` : ''}
+    </div>`).join('')}</div>
+    ${r.saldos.length < 2 ? `<div class="row wrap" style="margin-top:10px"><span class="tiny muted grow">A outra pessoa aparece aqui quando conectar o app ao mesmo repositório. Pode cadastrar o nome antes, para já dividir gastos.</span><button class="btn sm" data-act="membro-add">${icon('plus')} Outra pessoa</button></div>` : ''}
+    <p class="tiny muted" style="margin:10px 0 0">Cada um guarda na própria conta e informa aqui o saldo atual. Depois de pagar uma etapa, atualize o saldo de quem pagou.</p>
+  </section>
+  ${r.faltaTotal > 0 ? `<div class="alerta ${r.proxima ? 'info' : 'ok'}"><div class="grow">${r.cobertas.length ? `O guardado cobre ${r.cobertas.map((x) => esc(x.e.nome)).join(', ')}.` : ''}
+    ${r.proxima ? ` Para fechar <b>${esc(r.proxima.e.nome)}</b> faltam <b>${brl(r.proxima.faltaParaCobrir)}</b>.` : ` Ainda sobram ${brl(r.sobraDepois)}.`}</div></div>` : ''}
+  <section class="card">
+    <div class="card-h"><h2>Etapas da obra</h2><button class="btn sm" data-act="casa-etapa">${icon('plus')} Etapa</button></div>
+    <ul class="lista">${r.etapas.map((x) => `<li class="click" data-act="casa-etapa" data-arg="${x.e.id}">
+      <div class="desc"><b>${esc(x.e.nome)}</b><small>${x.estado === 'andamento' ? 'em andamento · ' : ''}${x.previsto == null ? 'sem valor previsto' : `previsto ${brl(x.previsto)}`}${x.pago > 0 ? ` · pago ${brl(x.pago)}` : ''}${x.estouro ? ` · passou ${brl(x.estouro)}` : ''}</small>
+        ${x.previsto ? `<div class="barra" style="height:6px;margin-top:6px;max-width:260px"><span class="${x.estouro ? 'b' : 'p'}" style="width:${Math.min(100, (x.pago / x.previsto) * 100)}%"></span></div>` : ''}</div>
+      ${x.estado === 'concluida' ? estadoTag.concluida : ''}<div class="valor">${x.falta > 0 ? brl(x.falta) : ''}${x.falta > 0 ? '<small>falta</small>' : ''}</div></li>`).join('') || '<li class="vazio">Nenhuma etapa.</li>'}</ul>
+    <p class="tiny muted" style="margin:8px 0 0">Toque na etapa para pôr o valor previsto e registrar os pagamentos.</p>
+  </section>
+  ${comp.casa.saldos.length ? `<section class="card"><div class="card-h"><h2>Histórico dos saldos</h2></div>
+    <ul class="lista">${[...comp.casa.saldos].sort((a, b) => b.data.localeCompare(a.data) || (b.em || '').localeCompare(a.em || '')).slice(0, 12).map((x) => `<li><div class="desc"><b>${esc(nomeM(x.membro))}</b><small>${dataBR(x.data)}</small></div><div class="valor">${brl(x.valor)}</div>
+      ${x.membro === eu ? `<button class="btn sm ghost perigo" data-act="casa-saldo-apagar" data-arg="${x.id}" aria-label="Apagar registro">${icon('x')}</button>` : ''}</li>`).join('')}</ul></section>` : ''}`;
+}
+
+function vViagens() {
+  const ind = compIndisponivel(); if (ind) return ind;
+  const comp = S.comp.dados;
+  const v = S.viagemSel && comp.viagens.find((x) => x.id === S.viagemSel);
+  if (v) return vViagem(v);
+  const via = PL.viabilidade(comp, euId(), S.dados, S.hoje);
+  return `${atualizadoComp()}
+  <div class="row"><button class="btn pri" data-act="viagem-form">${icon('plus')} Nova viagem</button></div>
+  ${comp.membros.length < 2 ? `<div class="alerta info"><div class="grow small">Para dividir gastos, a outra pessoa precisa estar cadastrada. Ela entra sozinha quando conectar o app; se quiser, cadastre o nome agora.</div><button class="btn sm" data-act="membro-add">${icon('plus')} Outra pessoa</button></div>` : ''}
+  ${comp.viagens.length ? '' : '<div class="card vazio">Nenhuma viagem ainda. Crie uma, defina o limite e vá lançando os gastos previstos.</div>'}
+  ${[...comp.viagens].sort((a, b) => (a.ida || '9').localeCompare(b.ida || '9')).map((x) => {
+    const r = PL.resumoViagem(comp, x);
+    const meu = via.semRenda ? null : vereditoViagem(via, x);
+    return `<section class="card click" data-act="viagem-abrir" data-arg="${x.id}" style="cursor:pointer">
+      <div class="card-h"><h2>${esc(x.nome)}</h2>${meu ? `<span class="tag ${meu.estado}">${meu.rotulo}</span>` : ''}</div>
+      <div class="small muted" style="margin:-6px 0 10px">${[x.destino, x.ida ? `${dataBR(x.ida)}${x.volta ? ' a ' + dataBR(x.volta) : ''}` : null].filter(Boolean).map(esc).join(' · ')}</div>
+      <div class="grid g3m">
+        <div><div class="tiny muted">Limite</div><div class="num" style="font-weight:680">${r.limite ? brl(r.limite) : '—'}</div></div>
+        <div><div class="tiny muted">Planejado</div><div class="num" style="font-weight:680">${brl(r.total)}</div></div>
+        <div><div class="tiny muted">Ainda pode gastar</div><div class="num" style="font-weight:680;${r.disponivel < 0 ? 'color:var(--bad)' : ''}">${r.limite ? brl(r.disponivel) : '—'}</div></div>
+      </div>
+      ${r.limite ? `<div class="barra" style="margin-top:12px"><span class="${r.pct > 1 ? 'b' : r.pct > 0.9 ? 'w' : 'p'}" style="width:${Math.min(100, r.pct * 100)}%"></span></div>` : ''}
+    </section>`;
+  }).join('')}`;
+}
+
+// Veredito pessoal de uma viagem: o pior mês entre os meses em que ela tira dinheiro de mim.
+function vereditoViagem(via, v) {
+  const meses = new Set([...via.porMesViagem.keys()].filter((k) => k.endsWith('|' + v.id)).map((k) => k.split('|')[0]));
+  const linhas = via.linhas.filter((l) => meses.has(l.mes));
+  if (!linhas.length) return { estado: 'ok', rotulo: 'nada a pagar por você', pior: null };
+  const pior = linhas.reduce((a, b) => (b.sobra < a.sobra ? b : a));
+  const rot = { ok: 'cabe no seu orçamento', warn: 'aperta seu orçamento', bad: 'não cabe no seu orçamento' };
+  return { estado: pior.estado, rotulo: rot[pior.estado], pior };
+}
+
+function vViagem(v) {
+  const comp = S.comp.dados; const eu = euId();
+  const r = PL.resumoViagem(comp, v);
+  const via = PL.viabilidade(comp, eu, S.dados, S.hoje);
+  const forma = (i) => (i.forma === 'cartao' ? `cartão${i.pagador === eu && i.cartao && cartao(i.cartao) ? ' ' + cartao(i.cartao).nome : ''}${Number(i.parcelas) > 1 ? ` ${i.parcelas}x` : ' à vista'}` : 'Pix/débito/dinheiro');
+  const divisao = (i) => { const p = Number(i.parteOutro || 0); const o = PL.outroMembro(comp, i.pagador); return p > 0 && o ? (Math.abs(p - 0.5) < 0.001 ? `meio a meio com ${o.nome.split(' ')[0]}` : `${Math.round(p * 100)}% de ${o.nome.split(' ')[0]}`) : 'sem dividir'; };
+  const cats = [...new Set([...PL.CATEGORIAS_VIAGEM.filter((c) => r.porCategoria.has(c)), ...[...r.porCategoria.keys()]])];
+  let painel;
+  if (via.semRenda) painel = `<div class="alerta info"><div class="grow">Para saber se a viagem cabe no seu bolso, informe sua renda e suas contas fixas em Ajustes. Só você vê esses números.</div><button class="btn sm" data-act="nav" data-arg="ajustes">Ajustes</button></div>`;
+  else {
+    const ver = vereditoViagem(via, v);
+    const meses = via.linhas.filter((l) => l.viagens > 0 || l.estado !== 'ok').slice(0, 12);
+    const txt = !ver.pior ? 'Nenhum gasto desta viagem está com você.'
+      : ver.estado === 'ok' ? `No mês mais apertado (${mesCurto(ver.pior.mes + '-01')}) ainda sobram ${brl(ver.pior.sobra)}.`
+        : ver.estado === 'warn' ? `Em ${mesCurto(ver.pior.mes + '-01')} sobram só ${brl(ver.pior.sobra)}, abaixo da sua margem de ${brl(via.margem)}.`
+          : `Em ${mesCurto(ver.pior.mes + '-01')} faltam ${brl(-ver.pior.sobra)}.`;
+    painel = `<div class="veredito ${ver.estado}"><div class="grow"><b class="t">${ver.rotulo[0].toUpperCase() + ver.rotulo.slice(1)}</b><span class="small">${txt}</span></div></div>
+      <div class="tabela-wrap" style="margin-top:12px"><table class="t">
+        <thead><tr><th>Mês</th><th class="n">Renda</th><th class="n">Contas + casa</th><th class="n">Faturas (sua parte)</th><th class="n">Viagens</th><th class="n">Sobra</th></tr></thead>
+        <tbody>${meses.map((l) => `<tr class="${l.estado}"><td>${mesCurto(l.mes + '-01')}</td><td class="n">${num(l.renda)}</td><td class="n">${num(l.contas + l.casa)}</td><td class="n">${num(l.faturas)}</td><td class="n">${num(l.viagens)}</td><td class="n sobra">${num(l.sobra)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <p class="tiny muted" style="margin:8px 0 0">Faturas = parcelas e gastos fixos já conhecidos dos seus cartões, pelo mês do vencimento. Viagens = gastos ainda não comprados de todas as viagens, na sua parte. Só você vê esta tabela.</p>`;
+  }
+  return `
+  <div class="row wrap"><button class="btn sm ghost" data-act="viagem-voltar">← Viagens</button><div class="grow"></div><button class="btn sm ghost" data-act="comp-recarregar">${icon('refresh')} Atualizar</button><button class="btn sm" data-act="viagem-form" data-arg="${v.id}">Editar</button></div>
+  <section class="card">
+    <div class="card-h"><h2>${esc(v.nome)}</h2><span class="small muted">${[v.destino, v.ida ? `${dataBR(v.ida)}${v.volta ? ' a ' + dataBR(v.volta) : ''}` : null].filter(Boolean).map(esc).join(' · ')}</span></div>
+    <div class="grid g4">
+      <div><div class="tiny muted">Limite</div><div class="num" style="font-size:20px;font-weight:680">${r.limite ? brl(r.limite) : '—'}</div></div>
+      <div><div class="tiny muted">Planejado</div><div class="num" style="font-size:20px;font-weight:680">${brl(r.total)}</div></div>
+      <div><div class="tiny muted">Ainda pode gastar</div><div class="num" style="font-size:20px;font-weight:680;${r.disponivel < 0 ? 'color:var(--bad)' : ''}">${r.limite ? brl(r.disponivel) : '—'}</div></div>
+      <div><div class="tiny muted">Já comprado</div><div class="num" style="font-size:20px;font-weight:680">${brl(r.comprado)}</div></div>
+    </div>
+    ${r.limite ? `<div class="barra" style="margin-top:12px"><span class="${r.pct > 1 ? 'b' : r.pct > 0.9 ? 'w' : 'p'}" style="width:${Math.min(100, r.pct * 100)}%"></span></div>` : ''}
+    ${r.disponivel < 0 && r.limite ? `<div class="alerta bad small" style="margin-top:12px">O planejado passou ${brl(-r.disponivel)} do limite.</div>` : ''}
+    <div class="small" style="margin-top:12px">${comp.membros.map((m) => `${esc(m.nome.split(' ')[0])}: <b>${brl(r.porMembro[m.id] || 0)}</b>`).join(' · ')}</div>
+  </section>
+  <section class="card"><div class="card-h"><h2>Cabe no seu bolso?</h2></div>${painel}</section>
+  <section class="card">
+    <div class="card-h"><h2>Gastos</h2><button class="btn sm pri" data-act="item-form" data-arg="${v.id}">${icon('plus')} Gasto</button></div>
+    ${cats.map((c) => `<div class="sec-tit">${esc(c)} · ${brl(r.porCategoria.get(c))}</div>
+      <ul class="lista">${v.itens.filter((i) => i.categoria === c).map((i) => `<li class="click" data-act="item-form" data-arg="${v.id}|${i.id}">
+        <div class="desc"><b>${esc(i.desc || i.categoria)}</b><small>${esc(nomeM(i.pagador).split(' ')[0])} paga · ${esc(forma(i))} · ${esc(divisao(i))}${i.data ? ` · ${dataBR(i.data)}` : ''}</small></div>
+        ${i.status === 'comprado' ? '<span class="tag ok">comprado</span>' : '<span class="tag">previsto</span>'}<div class="valor">${brl(i.valor)}</div></li>`).join('')}</ul>`).join('') || '<p class="vazio">Nenhum gasto ainda.</p>'}
+    ${r.semEstimativa.length ? `<div class="sec-tit">Ainda sem estimativa</div><div class="chips">${r.semEstimativa.map((c) => `<button data-act="item-form" data-arg="${v.id}||${esc(c)}">${icon('plus')} ${esc(c)}</button>`).join('')}</div>` : ''}
+  </section>`;
+}
+
 // ======================= AJUSTES =======================
 function vAjustes() {
   const d = S.dados; const cfg = S.store.cfg || {};
   const tiposPix = [['cpf', 'CPF'], ['cnpj', 'CNPJ'], ['telefone', 'Telefone'], ['email', 'E-mail'], ['aleatoria', 'Aleatória']];
+  const orc = d.orcamento || {};
+  const cc = S.comp.store;
+  const faltando = Object.values(CARTOES_MODELO).filter((m) => !d.cartoes.some((c) => c.id === m.id));
   return `
+  <section class="card form">
+    <h2>Renda e compromissos <span class="tag">só você vê</span></h2>
+    <p class="small muted" style="margin:0">Usados para dizer se uma viagem ou compra parcelada cabe no seu mês. Ficam no seu repositório, não no do casal.</p>
+    <div class="lado"><label class="campo"><span>Renda líquida por mês (R$)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="renda" value="${orc.renda ? num(orc.renda) : ''}"></label>
+    <label class="campo"><span>Contas fixas fora do cartão (R$/mês)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="compromissos" value="${orc.compromissos ? num(orc.compromissos) : ''}" placeholder="aluguel, luz, internet…"></label></div>
+    <div class="lado"><label class="campo"><span>Quanto separa para a casa (R$/mês)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="guardarCasa" value="${orc.guardarCasa ? num(orc.guardarCasa) : ''}"></label>
+    <label class="campo"><span>Margem de segurança (% da renda)</span><input class="inp" type="number" min="0" max="80" data-chg="orc" data-arg="margem" value="${Math.round((orc.margem ?? 0.1) * 100)}"></label></div>
+    <p class="tiny muted" style="margin:0">Mês com sobra abaixo da margem aparece em amarelo; sobra negativa, em vermelho. As faturas entram pela sua parte (o que outras pessoas te devolvem não conta como gasto seu).</p>
+  </section>
+  <section class="card pilha">
+    <h2>Casa e viagens (compartilhado)</h2>
+    ${cc.configurado ? `<p class="small" style="margin:6px 0 0">Conectado a <b>${esc(cc.cfg.owner)}/${esc(cc.cfg.repo)}</b> como <b>${esc(cc.cfg.eu)}</b>.${S.comp.erro ? ` <span class="erro-txt">${esc(S.comp.erro)}</span>` : ''}</p>
+      <div class="row wrap"><button class="btn" data-act="comp-recarregar">${icon('refresh')} Atualizar agora</button><button class="btn perigo" data-act="comp-sair">Desconectar casa e viagens</button></div>`
+    : `<p class="small muted" style="margin:6px 0 0">Para os dois verem e editarem casa e viagens, o arquivo fica num repositório de uma organização do GitHub da qual vocês dois fazem parte. Cada um usa o próprio token, com a organização como dono e só esse repositório (Contents: Read and write).</p>
+      <form class="form" id="f-comp" autocomplete="off">
+        <div class="lado"><label class="campo"><span>Organização</span><input class="inp" name="owner" required autocapitalize="off" spellcheck="false"></label>
+        <label class="campo"><span>Repositório (privado)</span><input class="inp" name="repo" required value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label></div>
+        <label class="campo"><span>Token da organização (github_pat_…)</span><input class="inp" name="token" type="password" required autocapitalize="off" spellcheck="false"></label>
+        <div class="lado"><label class="campo"><span>Seu nome</span><input class="inp" name="nome" required></label>
+        <label class="campo"><span>PIN deste aparelho</span><input class="inp" name="pin" type="password" inputmode="numeric" required></label></div>
+        <button class="btn pri" type="submit">Conectar</button>
+      </form>`}
+  </section>
   <section class="card pilha">
     <h2>Cartões e chaves Pix</h2>
     <p class="small muted" style="margin:6px 0 0">A chave Pix de cada cartão vai na mensagem de cobrança das compras feitas nele.</p>
@@ -527,7 +805,9 @@ function vAjustes() {
       <label class="campo"><span>Chave Pix (${esc(c.pix?.banco || c.nome)})</span><input class="inp" data-chg="cartao" data-arg="${c.id}|pix.chave" value="${esc(c.pix?.chave || '')}" autocapitalize="off"></label></div>
       <div class="lado"><label class="campo"><span>Nome do titular</span><input class="inp" data-chg="cartao" data-arg="${c.id}|pix.nome" value="${esc(c.pix?.nome || '')}"></label>
       <label class="campo"><span>Cidade</span><input class="inp" data-chg="cartao" data-arg="${c.id}|pix.cidade" value="${esc(c.pix?.cidade || '')}"></label></div>
+      ${d.cartoes.length > 1 && !d.lancamentos.some((l) => l.cartao === c.id) ? `<div><button class="btn sm ghost perigo" data-act="cartao-remover" data-arg="${c.id}">Remover ${esc(c.nome)}</button></div>` : ''}
     </div>`).join('')}
+    ${faltando.length ? `<div class="row wrap">${faltando.map((m) => `<button class="btn sm" data-act="cartao-add" data-arg="${m.id}">${icon('plus')} ${esc(m.nome)}</button>`).join('')}<span class="tiny muted">confira o dia de fechamento e vencimento depois de adicionar</span></div>` : ''}
   </section>
   <section class="card">
     <div class="card-h"><h2>Pessoas</h2><button class="btn sm" data-act="pessoa-form">${icon('plus')} Pessoa</button></div>
@@ -920,6 +1200,259 @@ function modalGrupo(gid) {
   });
 }
 
+// ---------- casa e viagens: modais ----------
+const valorInp = (v) => (v == null || v === '' ? '' : (typeof v === 'number' ? num(v) : esc(v)));
+// Valor digitado: "80.000" é oitenta mil (ponto de milhar), "1.234,56" e "34,9" também valem.
+const lerNum = (v) => {
+  const t = String(v ?? '').trim().replace(/^R\$\s*/i, '');
+  const n = parseValor(/^\d{1,3}(\.\d{3})+$/.test(t) ? t.replace(/\./g, '') : t);
+  return Number.isFinite(n) ? round2(n) : null;
+};
+
+function modalSaldo() {
+  const eu = euId();
+  const atual = PL.saldosPorMembro(S.comp.dados).find((x) => x.membro.id === eu);
+  abrirModal(`${cabecalhoModal('Meu saldo para a casa')}
+    <form class="form" id="f-saldo">
+      <p class="small muted" style="margin:0">Quanto você tem guardado hoje para a casa, na sua conta.${atual?.data ? ` Último informado: ${brl(atual.valor)} em ${dataBR(atual.data)}.` : ''}</p>
+      <div class="lado"><label class="campo"><span>Saldo (R$)</span><input class="inp" name="valor" inputmode="decimal" required autofocus></label>
+      <label class="campo"><span>Data</span><input class="inp" type="date" name="data" value="${S.hoje}" required></label></div>
+      <div class="modal-f"><button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button class="btn pri" type="submit">Salvar</button></div>
+    </form>`, {
+    aoMontar: (m) => m.querySelector('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const valor = lerNum(f.valor);
+      if (valor == null || valor < 0) return toast('Informe o saldo.');
+      const reg = { id: uid('s'), membro: eu, data: f.data || S.hoje, valor, em: new Date().toISOString() };
+      mutarComp((dd) => { if (!dd.casa.saldos.some((x) => x.id === reg.id)) dd.casa.saldos.push(reg); }, 'app: saldo da casa');
+      fecharModal();
+    }),
+  });
+}
+
+function modalEtapa(id) {
+  const comp = S.comp.dados; const eu = euId();
+  const orig = id ? comp.casa.etapas.find((x) => x.id === id) : null;
+  const ed = orig ? structuredClone(orig) : { id: uid('e'), nome: '', previsto: null, concluida: false, pagamentos: [] };
+  ed.previstoTxt = ed.previsto == null ? '' : num(ed.previsto);
+  const novoPag = { data: S.hoje, valor: '', desc: '', quem: eu };
+  const tela = (m) => {
+    const pago = PL.pagoEtapa(ed);
+    m.innerHTML = `${cabecalhoModal(orig ? 'Etapa da obra' : 'Nova etapa')}
+    <div class="form">
+      <label class="campo"><span>Nome</span><input class="inp" data-t="nome" value="${esc(ed.nome)}" placeholder="ex.: Fundação (radier)"></label>
+      <div class="lado"><label class="campo"><span>Valor previsto (R$)</span><input class="inp" inputmode="decimal" data-t="previstoTxt" value="${esc(ed.previstoTxt)}" placeholder="orçamento da etapa"></label>
+      <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" data-t="concluida" ${ed.concluida ? 'checked' : ''}> Etapa concluída</label></div>
+      <div><div class="small" style="font-weight:600;margin-bottom:4px">Pagamentos · ${brl(pago)}</div>
+        <ul class="lista">${ed.pagamentos.map((p, i) => `<li><div class="desc"><b>${brl(p.valor)}</b><small>${dataBR(p.data)} · ${esc(nomeM(p.quem))}${p.desc ? ' · ' + esc(p.desc) : ''}</small></div><button type="button" class="btn sm ghost perigo" data-t-rem="${i}" aria-label="Remover pagamento">${icon('x')}</button></li>`).join('') || '<li class="vazio">Nenhum pagamento registrado.</li>'}</ul>
+        <div class="card plano form" style="background:var(--surface-2);margin-top:8px">
+          <div class="lado"><label class="campo"><span>Valor pago (R$)</span><input class="inp" inputmode="decimal" data-p="valor" value="${esc(novoPag.valor)}"></label>
+          <label class="campo"><span>Data</span><input class="inp" type="date" data-p="data" value="${novoPag.data}"></label></div>
+          <div class="lado"><label class="campo"><span>Quem pagou</span><select class="inp" data-p="quem">${comp.membros.map((x) => `<option value="${x.id}" ${x.id === novoPag.quem ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select></label>
+          <label class="campo"><span>Descrição</span><input class="inp" data-p="desc" value="${esc(novoPag.desc)}" placeholder="ex.: entrada, sinal"></label></div>
+          <button type="button" class="btn sm" data-t-add>${icon('plus')} Adicionar pagamento</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-f">${orig ? `<button type="button" class="btn perigo" data-t-apagar>Apagar etapa</button><button type="button" class="btn sm ghost" data-t-mover="-1" aria-label="Subir">↑</button><button type="button" class="btn sm ghost" data-t-mover="1" aria-label="Descer">↓</button>` : ''}<div class="grow"></div><button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button type="button" class="btn pri" data-t-salvar>Salvar</button></div>`;
+  };
+  abrirModal('', {
+    aoMontar: (m) => {
+      tela(m);
+      m.addEventListener('input', (e) => {
+        const t = e.target;
+        if (t.dataset.t) ed[t.dataset.t] = t.type === 'checkbox' ? t.checked : t.value;
+        if (t.dataset.p) novoPag[t.dataset.p] = t.value;
+      });
+      m.addEventListener('change', (e) => { const t = e.target; if (t.dataset.t === 'concluida') ed.concluida = t.checked; if (t.dataset.p) novoPag[t.dataset.p] = t.value; });
+      m.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        if (b.dataset.tRem != null) { ed.pagamentos.splice(Number(b.dataset.tRem), 1); tela(m); }
+        if (b.hasAttribute('data-t-add')) {
+          const v = lerNum(novoPag.valor);
+          if (!v || v <= 0) return toast('Informe o valor pago.');
+          ed.pagamentos.push({ id: uid('pg'), data: novoPag.data || S.hoje, valor: v, desc: novoPag.desc.trim(), quem: novoPag.quem });
+          novoPag.valor = ''; novoPag.desc = ''; tela(m);
+        }
+        if (b.hasAttribute('data-t-apagar') && confirm(`Apagar a etapa "${ed.nome}" e os pagamentos dela?`)) {
+          mutarComp((dd) => { dd.casa.etapas = dd.casa.etapas.filter((x) => x.id !== ed.id); }, 'app: etapa apagada'); fecharModal();
+        }
+        if (b.dataset.tMover) {
+          const passo = Number(b.dataset.tMover);
+          mutarComp((dd) => {
+            const i = dd.casa.etapas.findIndex((x) => x.id === ed.id); const j = i + passo;
+            if (i < 0 || j < 0 || j >= dd.casa.etapas.length) return;
+            [dd.casa.etapas[i], dd.casa.etapas[j]] = [dd.casa.etapas[j], dd.casa.etapas[i]];
+          }, 'app: etapa reordenada');
+        }
+        if (b.hasAttribute('data-t-salvar')) {
+          if (!ed.nome.trim()) return toast('Dê um nome à etapa.');
+          const previsto = String(ed.previstoTxt).trim() ? lerNum(ed.previstoTxt) : null;
+          if (String(ed.previstoTxt).trim() && previsto == null) return toast('Valor previsto inválido.');
+          if (lerNum(novoPag.valor) > 0 && !confirm('Há um pagamento digitado e não adicionado. Salvar sem ele?')) return;
+          const final = { id: ed.id, nome: ed.nome.trim(), previsto, concluida: !!ed.concluida, pagamentos: ed.pagamentos };
+          mutarComp((dd) => {
+            const i = dd.casa.etapas.findIndex((x) => x.id === final.id);
+            if (i >= 0) dd.casa.etapas[i] = structuredClone(final); else dd.casa.etapas.push(structuredClone(final));
+          }, 'app: etapa salva');
+          fecharModal();
+        }
+      });
+    },
+  });
+}
+
+function modalViagem(id) {
+  const comp = S.comp.dados;
+  const v = id ? comp.viagens.find((x) => x.id === id) : null;
+  abrirModal(`${cabecalhoModal(v ? 'Editar viagem' : 'Nova viagem')}
+    <form class="form" id="f-viagem">
+      <label class="campo"><span>Nome</span><input class="inp" name="nome" required value="${esc(v?.nome || '')}" placeholder="ex.: Férias de janeiro" autofocus></label>
+      <label class="campo"><span>Destino</span><input class="inp" name="destino" value="${esc(v?.destino || '')}"></label>
+      <div class="lado"><label class="campo"><span>Ida</span><input class="inp" type="date" name="ida" value="${v?.ida || ''}"></label>
+      <label class="campo"><span>Volta</span><input class="inp" type="date" name="volta" value="${v?.volta || ''}"></label></div>
+      <label class="campo"><span>Limite de gastos da viagem (R$)</span><input class="inp" name="limite" inputmode="decimal" value="${v?.limite ? num(v.limite) : ''}" placeholder="o máximo que vocês querem gastar"></label>
+      <div class="modal-f">${v ? '<button type="button" class="btn perigo" data-v-apagar>Apagar viagem</button><div class="grow"></div>' : ''}<button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button class="btn pri" type="submit">Salvar</button></div>
+    </form>`, {
+    aoMontar: (m) => {
+      m.querySelector('[data-v-apagar]')?.addEventListener('click', () => {
+        if (!confirm(`Apagar a viagem "${v.nome}" e todos os gastos dela? Lançamentos já feitos nas faturas continuam lá.`)) return;
+        mutarComp((dd) => { dd.viagens = dd.viagens.filter((x) => x.id !== v.id); }, 'app: viagem apagada');
+        S.viagemSel = null; fecharModal();
+      });
+      m.querySelector('form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(e.target));
+        if (f.ida && f.volta && f.volta < f.ida) return toast('A volta está antes da ida.');
+        const limite = String(f.limite).trim() ? lerNum(f.limite) : 0;
+        if (limite == null) return toast('Limite inválido.');
+        const campos = { nome: f.nome.trim(), destino: f.destino.trim(), ida: f.ida || null, volta: f.volta || null, limite };
+        const nid = v?.id || uid('v');
+        mutarComp((dd) => {
+          const x = dd.viagens.find((y) => y.id === nid);
+          if (x) Object.assign(x, campos); else dd.viagens.push({ id: nid, ...campos, criadaPor: euId(), itens: [] });
+        }, v ? 'app: viagem editada' : 'app: viagem criada');
+        S.viagemSel = nid; fecharModal();
+      });
+    },
+  });
+}
+
+function modalItem(vid, iid, categoria) {
+  const comp = S.comp.dados; const eu = euId();
+  const v = comp.viagens.find((x) => x.id === vid); if (!v) return;
+  const orig = iid ? v.itens.find((x) => x.id === iid) : null;
+  const outro = PL.outroMembro(comp, eu);
+  const ed = orig ? structuredClone(orig) : {
+    id: uid('i'), categoria: categoria || PL.CATEGORIAS_VIAGEM[0], desc: '', valor: null, pagador: eu, parteOutro: outro ? 0.5 : 0,
+    forma: 'cartao', cartao: S.dados.cartoes[0]?.id || null, parcelas: 1, data: S.hoje, status: 'previsto', lancamento: null,
+  };
+  ed.valorTxt = ed.valor == null ? '' : num(ed.valor);
+  ed.divModo = !ed.parteOutro ? 'nao' : (Math.abs(ed.parteOutro - 0.5) < 0.001 ? 'metade' : 'outra');
+  ed.pctTxt = ed.divModo === 'outra' ? String(Math.round(ed.parteOutro * 100)) : '';
+  const travado = orig?.status === 'comprado' && orig.lancamento && orig.pagador === eu;
+
+  const montar = () => {
+    const valor = lerNum(ed.valorTxt);
+    const parteOutro = ed.divModo === 'nao' ? 0 : ed.divModo === 'metade' ? 0.5 : Math.min(100, Math.max(0, Number(ed.pctTxt) || 0)) / 100;
+    const outroDoPagador = PL.outroMembro(comp, ed.pagador);
+    return { id: ed.id, categoria: ed.categoria, desc: ed.desc.trim(), valor, pagador: ed.pagador, parteOutro: outroDoPagador ? parteOutro : 0,
+      forma: ed.forma, cartao: ed.forma === 'cartao' && ed.pagador === eu ? (ed.cartao || S.dados.cartoes[0]?.id || null) : (ed.pagador === eu ? null : (orig?.pagador === ed.pagador ? orig.cartao : null)),
+      parcelas: ed.forma === 'cartao' ? Math.max(1, Math.min(24, Number(ed.parcelas) || 1)) : 1, data: ed.data || S.hoje, status: ed.status, lancamento: ed.lancamento || null };
+  };
+  const impacto = () => {
+    const it = montar();
+    if (!(it.valor > 0) || !S.dados.orcamento?.renda) return '';
+    const antes = PL.viabilidade(comp, eu, S.dados, S.hoje, { semItem: it.id });
+    const depois = PL.viabilidade(comp, eu, S.dados, S.hoje, { semItem: it.id, extra: { viagem: v, item: it } });
+    const minhas = PL.saidasDoItem(comp, it, eu, S.dados, S.hoje);
+    if (!minhas.length) return `<div class="alerta info small">${it.status === 'comprado' ? 'Comprado: o valor já está (ou vai estar) na sua fatura.' : 'Nada deste gasto sai do seu bolso.'}</div>`;
+    const piorD = depois.linhas.filter((l) => minhas.some((x) => x.mes === l.mes)).reduce((a, b) => (b.sobra < a.sobra ? b : a));
+    const antesMes = antes.linhas.find((l) => l.mes === piorD.mes);
+    const cls = { ok: 'ok', warn: 'warn', bad: 'bad' }[piorD.estado];
+    return `<div class="alerta ${cls} small"><div class="grow">Sua parte: ${minhas.length > 1 ? `${minhas.length}× ${brl(minhas[0].valor)} (${mesCurto(minhas[0].mes + '-01')} a ${mesCurto(minhas[minhas.length - 1].mes + '-01')})` : `${brl(minhas[0].valor)} em ${mesCurto(minhas[0].mes + '-01')}`}.
+      No mês mais apertado (${mesCurto(piorD.mes + '-01')}) a sobra vai de ${brl(antesMes.sobra)} para <b>${brl(piorD.sobra)}</b>${piorD.estado === 'bad' ? ' — não cabe.' : piorD.estado === 'warn' ? ' — abaixo da sua margem.' : '.'}</div></div>`;
+  };
+  const tela = (m) => {
+    const ehMeu = ed.pagador === eu;
+    const outroDoPagador = PL.outroMembro(comp, ed.pagador);
+    m.innerHTML = `${cabecalhoModal(orig ? 'Gasto da viagem' : 'Novo gasto')}
+    <div class="form">
+      ${travado ? '<div class="alerta info small">Já lançado na sua fatura. Para mudar valor ou parcelas, edite o lançamento em Faturas.</div>' : ''}
+      <div class="lado"><label class="campo"><span>Categoria</span><select class="inp" data-i="categoria">${[...new Set([...PL.CATEGORIAS_VIAGEM, ed.categoria])].map((c) => `<option ${c === ed.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+      <label class="campo"><span>Valor total (R$)</span><input class="inp" inputmode="decimal" data-i="valorTxt" value="${esc(ed.valorTxt)}" ${travado ? 'disabled' : ''}></label></div>
+      <label class="campo"><span>Descrição</span><input class="inp" data-i="desc" value="${esc(ed.desc)}" placeholder="ex.: hotel 4 diárias, passagem ida e volta"></label>
+      <div class="lado"><label class="campo"><span>Quem paga</span><select class="inp" data-i="pagador" ${travado ? 'disabled' : ''}>${comp.membros.map((x) => `<option value="${x.id}" ${x.id === ed.pagador ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select></label>
+      <label class="campo"><span>Data da compra</span><input class="inp" type="date" data-i="data" value="${ed.data || ''}" ${travado ? 'disabled' : ''}></label></div>
+      ${outroDoPagador ? `<div><div class="small" style="font-weight:550;color:var(--ink-2);margin-bottom:6px">Dividir com ${esc(outroDoPagador.nome)}?</div>
+        <div class="row wrap"><div class="seg">${[['nao', 'Não'], ['metade', 'Meio a meio'], ['outra', 'Outra parte']].map(([k, t]) => `<button type="button" data-i-div="${k}" aria-pressed="${ed.divModo === k}">${t}</button>`).join('')}</div>
+        ${ed.divModo === 'outra' ? `<label class="row small"><input class="inp" style="width:80px" inputmode="numeric" data-i="pctTxt" value="${esc(ed.pctTxt)}"> % fica com ${esc(outroDoPagador.nome.split(' ')[0])}</label>` : ''}</div></div>` : ''}
+      <div><div class="small" style="font-weight:550;color:var(--ink-2);margin-bottom:6px">Como vai pagar</div>
+        <div class="seg">${[['cartao', 'Cartão de crédito'], ['pix', 'Pix, débito ou dinheiro']].map(([k, t]) => `<button type="button" data-i-forma="${k}" aria-pressed="${ed.forma === k}" ${travado ? 'disabled' : ''}>${t}</button>`).join('')}</div></div>
+      ${ed.forma === 'cartao' ? `<div class="lado">
+        ${ehMeu ? `<label class="campo"><span>Cartão</span><select class="inp" data-i="cartao" ${travado ? 'disabled' : ''}>${S.dados.cartoes.map((c) => `<option value="${c.id}" ${c.id === ed.cartao ? 'selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></label>` : '<div class="tiny muted" style="align-self:end;padding-bottom:12px">O cartão fica com quem paga.</div>'}
+        <label class="campo"><span>Parcelas</span><input class="inp" type="number" min="1" max="24" data-i="parcelas" value="${ed.parcelas}" ${travado ? 'disabled' : ''}></label></div>` : ''}
+      ${ehMeu ? `<label class="check"><input type="checkbox" data-i="comprado" ${ed.status === 'comprado' ? 'checked' : ''}> Já comprei${ed.forma === 'cartao' && !orig?.lancamento ? ' <span class="tiny muted">(entra na fatura como lançamento seu)</span>' : ''}</label>`
+        : `<div class="small muted">${ed.status === 'comprado' ? 'Comprado' : 'Ainda não comprado'} — quem marca é ${esc(nomeM(ed.pagador))}.</div>`}
+      <div data-impacto>${impacto()}</div>
+    </div>
+    <div class="modal-f">${orig ? '<button type="button" class="btn perigo" data-i-apagar>Apagar</button><div class="grow"></div>' : ''}<button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button type="button" class="btn pri" data-i-salvar>Salvar</button></div>`;
+  };
+  abrirModal('', {
+    aoMontar: (m) => {
+      tela(m);
+      const atualizaImpacto = () => { const el = m.querySelector('[data-impacto]'); if (el) el.innerHTML = impacto(); };
+      m.addEventListener('input', (e) => { const t = e.target; if (['valorTxt', 'desc', 'pctTxt', 'parcelas'].includes(t.dataset.i)) { ed[t.dataset.i] = t.value; atualizaImpacto(); } });
+      m.addEventListener('change', (e) => {
+        const t = e.target; const k = t.dataset.i; if (!k) return;
+        if (k === 'comprado') ed.status = t.checked ? 'comprado' : 'previsto'; else ed[k] = t.value;
+        if (['pagador', 'comprado', 'cartao'].includes(k)) tela(m); else atualizaImpacto();
+      });
+      m.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        if (b.dataset.iDiv) { ed.divModo = b.dataset.iDiv; if (ed.divModo === 'outra' && !ed.pctTxt) ed.pctTxt = '50'; tela(m); }
+        if (b.dataset.iForma) { ed.forma = b.dataset.iForma; tela(m); }
+        if (b.hasAttribute('data-i-apagar')) {
+          if (!confirm('Apagar este gasto?' + (orig.lancamento ? ' O lançamento que já foi para a sua fatura continua lá.' : ''))) return;
+          mutarComp((dd) => { const x = dd.viagens.find((y) => y.id === vid); if (x) x.itens = x.itens.filter((y) => y.id !== orig.id); }, 'app: gasto da viagem apagado');
+          fecharModal();
+        }
+        if (b.hasAttribute('data-i-salvar')) salvar();
+      });
+    },
+  });
+  function salvar() {
+    const it = montar();
+    if (!(it.valor > 0)) return toast('Informe o valor.');
+    if (it.forma === 'cartao' && it.pagador === eu && !it.cartao) return toast('Escolha o cartão.');
+    // comprou agora no cartão → lançamento na minha fatura; desmarcou → tira o lançamento (se ainda for o manual)
+    if (it.pagador === eu && it.forma === 'cartao' && it.status === 'comprado' && !it.lancamento) {
+      const outroM = PL.outroMembro(comp, eu);
+      let lanc;
+      mutar((dd) => {
+        const pessoa = it.parteOutro > 0 ? PL.pessoaParaMembro(dd, outroM) : null;
+        if (pessoa?.nova) dd.pessoas.push(pessoa.nova);
+        lanc = PL.lancamentoDoItem(comp, v, it, dd, pessoa?.id);
+        dd.lancamentos.push(lanc);
+      }, `app: compra da viagem ${v.nome}`);
+      it.lancamento = lanc.id;
+      toast(`Lançado no ${cartao(it.cartao).nome}, fatura de ${dataBR(lanc.venc)}.`, 3500);
+    } else if (orig?.lancamento && it.status !== 'comprado') {
+      const l = S.dados.lancamentos.find((x) => x.id === orig.lancamento);
+      if (l && l.origem === 'manual') mutar((dd) => { dd.lancamentos = dd.lancamentos.filter((x) => x.id !== orig.lancamento); }, 'app: compra da viagem desfeita');
+      else if (l) toast('A fatura com essa compra já foi importada; o lançamento do banco continua.', 4000);
+      it.lancamento = null;
+    }
+    mutarComp((dd) => {
+      const x = dd.viagens.find((y) => y.id === vid); if (!x) return;
+      const i = x.itens.findIndex((y) => y.id === it.id);
+      if (i >= 0) x.itens[i] = structuredClone(it); else x.itens.push(structuredClone(it));
+    }, orig ? 'app: gasto da viagem editado' : 'app: gasto da viagem');
+    fecharModal();
+  }
+}
+
 // ---------- importação ----------
 let pdfjsMod = null;
 async function lerArquivo(file, cartaoPref) {
@@ -930,7 +1463,7 @@ async function lerArquivo(file, cartaoPref) {
       pdfjsMod.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.js', import.meta.url).href;
     }
     const pages = await lerPaginasPDF(pdfjsMod, new Uint8Array(await file.arrayBuffer()));
-    return parseItauPages(pages);
+    return parsePDFFatura(pages);
   }
   return parseNubankCSV(await file.text(), file.name);
 }
@@ -938,7 +1471,8 @@ async function iniciarImport(file, cartaoPref) {
   let p;
   try { toast('Lendo arquivo…', 1500); p = await lerArquivo(file, cartaoPref); } catch (err) { return abrirModal(`${cabecalhoModal('Não consegui ler')}<p class="erro-txt">${esc(err.message)}</p><div class="modal-f"><button class="btn" data-act="fechar-modal">Ok</button></div>`); }
   const d = S.dados;
-  const cid = (d.cartoes.find((c) => c.id === p.banco) || d.cartoes.find((c) => (p.banco === 'itau' ? /ita/i : /nu/i).test(c.nome)) || d.cartoes[0]).id;
+  const reNome = { itau: /ita/i, nubank: /nu/i, mercadopago: /mercado/i }[p.banco] || /./;
+  const cid = (d.cartoes.find((c) => c.id === p.banco) || d.cartoes.find((c) => reNome.test(c.nome)) || d.cartoes[0]).id;
   const c = cartao(cid);
   const ultCompra = p.linhas.filter((l) => l.tipo === 'compra' && !l.parcela).map((l) => l.data).sort().pop() || S.hoje;
   const imp = { p, cartao: cid, venc: p.vencimento || C.vencDaCompra(c, ultCompra), valorInformado: null, refs: null };
@@ -950,7 +1484,7 @@ async function iniciarImport(file, cartaoPref) {
     const dif = imp.valorInformado != null ? round2(imp.valorInformado - calc) : null;
     const ant = C.vencAnterior(cc, imp.venc);
     const existe = d.lancamentos.some((l) => l.cartao === imp.cartao && l.venc === imp.venc && l.origem !== 'previsto');
-    m.innerHTML = `${cabecalhoModal(p.banco === 'itau' ? 'Fatura Itaú (PDF)' : 'Fatura Nubank (CSV)')}
+    m.innerHTML = `${cabecalhoModal({ itau: 'Fatura Itaú (PDF)', mercadopago: 'Fatura Mercado Pago (PDF)' }[p.banco] || 'Fatura Nubank (CSV)')}
     <div class="form">
       <div class="lado"><label class="campo"><span>Cartão</span><select class="inp" data-i="cartao">${d.cartoes.map((x) => `<option value="${x.id}" ${x.id === imp.cartao ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select></label>
       <label class="campo"><span>Vencimento da fatura</span><input class="inp" type="date" data-i="venc" value="${imp.venc}"></label></div>
@@ -960,7 +1494,7 @@ async function iniciarImport(file, cartaoPref) {
         <div><div class="tiny muted">Estornos/créditos</div><div class="num" style="font-weight:680">${brl(conc.creditos)}</div></div>
         <div><div class="tiny muted">Total calculado</div><div class="num" style="font-weight:680">${brl(calc)}</div></div>
       </div>
-      ${p.banco === 'itau' ? `
+      ${p.banco !== 'nubank' ? `
         ${p.totalDeclarado != null ? `<div class="alerta ${Math.abs(p.totalDeclarado - p.somaLancamentos) < 0.01 ? 'ok' : 'warn'} small">Total da fatura no PDF: ${brl(p.totalDeclarado)} · lido: ${brl(p.somaLancamentos)} ${Math.abs(p.totalDeclarado - p.somaLancamentos) < 0.01 ? '— confere.' : '— não confere.'}</div>` : ''}
         ${p.proximas?.linhas.length ? `<div class="alerta info small">Parcelas da próxima fatura (${dataBR(p.proximas.vencimento)}): ${p.proximas.linhas.length} itens, ${brl(p.proximas.soma)}${p.proximas.declarada != null ? (Math.abs(p.proximas.soma - p.proximas.declarada) < 0.01 ? ' — confere com o PDF' : ` — PDF diz ${brl(p.proximas.declarada)}`) : ''}. Entram como previstas.</div>` : ''}` : ''}
       ${conc.pagamentos.length ? `<div><div class="small" style="font-weight:550;color:var(--ink-2);margin-bottom:4px">Pagamentos no arquivo — de qual fatura são?</div>
@@ -991,7 +1525,7 @@ async function iniciarImport(file, cartaoPref) {
         const b = e.target.closest('button'); if (!b) return;
         if (b.hasAttribute('data-i-alt')) { imp.refs = { ...m._conc.alternativa }; tela(m); }
         if (b.hasAttribute('data-i-ok')) {
-          const origem = p.banco === 'itau' ? 'pdf' : 'csv';
+          const origem = p.banco === 'nubank' ? 'csv' : 'pdf';
           let resumo;
           mutar((dd) => {
             const r = importarFatura(dd, { cartao: imp.cartao, venc: imp.venc, origem, linhas: p.linhas, refs: imp.refs, valorInformado: imp.valorInformado, totalDeclarado: p.totalDeclarado ?? null, proximas: p.proximas || null });
@@ -1019,7 +1553,7 @@ let cartaoImport = null;
 arquivo.addEventListener('change', () => { const f = arquivo.files[0]; arquivo.value = ''; if (f) iniciarImport(f, cartaoImport); });
 
 const ACOES = {
-  nav: (a) => { S.view = a; if (a !== 'grupos') S.grupoSel = null; render(); window.scrollTo(0, 0); },
+  nav: (a) => { S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
   'fechar-modal': () => fecharModal(),
   'recarregar-pagina': () => location.reload(),
   importar: (a) => { cartaoImport = a || null; arquivo.click(); },
@@ -1046,7 +1580,11 @@ const ACOES = {
   'regra-nova': () => mutar((dd) => { dd.regras.push({ id: uid('r'), contem: 'texto da fatura', pessoa: EU, modo: 'inteiro', fixo: false }); }, 'app: regra criada'),
   'regra-apagar': (a) => mutar((dd) => { dd.regras = dd.regras.filter((r) => r.id !== a); }, 'app: regra apagada'),
   recarregar: async () => { fecharModal(); S.dados = null; await carregarDados(); toast('Dados recarregados.'); },
-  'criar-dados': async () => { fecharModal(); S.store.sha = null; S.msgSalvar = 'app: dados.json criado'; await salvarAgora(); render(); },
+  'criar-dados': async () => {
+    const ids = [...document.querySelectorAll('[data-novo-cartao]:checked')].map((x) => x.dataset.novoCartao);
+    if (!ids.length) return toast('Escolha pelo menos um cartão.');
+    S.dados = dadosVazios(ids);
+    fecharModal(); S.store.sha = null; S.msgSalvar = 'app: dados.json criado'; await salvarAgora(); render(); },
   'conflito-github': async () => { fecharModal(); S.dados = null; await carregarDados(); },
   'conflito-local': async () => {
     fecharModal();
@@ -1058,8 +1596,28 @@ const ACOES = {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `dados-cartoes-${S.hoje}.json`; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   },
-  bloquear: () => { S.store.bloquear(); S.dados = null; telaPin(); },
-  sair: () => { if (confirm('Desconectar este aparelho? Você vai precisar do token de novo. Os dados no GitHub continuam lá.')) { S.store.sair(); S.dados = null; telaConfig(); } },
+  'casa-saldo': () => modalSaldo(),
+  'membro-add': () => {
+    const nomeN = (prompt('Nome da outra pessoa (o mesmo que ela vai digitar ao conectar o app):') || '').trim();
+    if (!nomeN) return;
+    const id = slug(nomeN);
+    if (PL.membroPorId(S.comp.dados, id)) return toast('Essa pessoa já está cadastrada.');
+    mutarComp((dd) => { if (!PL.membroPorId(dd, id)) dd.membros.push({ id, nome: nomeN }); }, 'app: membro cadastrado');
+  },
+  'casa-saldo-apagar': (a) => { if (confirm('Apagar este registro de saldo?')) mutarComp((dd) => { dd.casa.saldos = dd.casa.saldos.filter((x) => x.id !== a); }, 'app: saldo apagado'); },
+  'casa-etapa': (a) => modalEtapa(a || null),
+  'viagem-form': (a) => modalViagem(a || null),
+  'viagem-abrir': (a) => { S.viagemSel = a; render(); window.scrollTo(0, 0); },
+  'viagem-voltar': () => { S.viagemSel = null; render(); },
+  'item-form': (a) => { const [vid, iid, cat] = a.split('|'); modalItem(vid, iid || null, cat || null); },
+  'comp-recarregar': async () => { S.comp.erro = ''; await carregarComp({ forcar: S.comp.sync !== 'pendente' }); if (!S.comp.erro) toast('Casa e viagens atualizadas.'); },
+  'comp-sair': () => { if (confirm('Desconectar casa e viagens deste aparelho? O arquivo no GitHub continua lá.')) { S.comp.store.sair(); S.comp.dados = null; S.comp.fila = []; render(); } },
+  'comp-usar-github': async () => { fecharModal(); S.comp.dados = null; S.comp.fila = []; S.comp.sync = 'ok'; await S.comp.store.gravarCache({ dados: null, sha: null, pendente: false }); await carregarComp({ forcar: true }); },
+  'comp-manter-local': async () => { fecharModal(); try { await S.comp.store.carregar(); } catch { /* segue */ } S.comp.msg = 'app: mantidos os dados deste aparelho'; await salvarComp(); },
+  'cartao-add': (a) => { if (!CARTOES_MODELO[a]) return; mutar((dd) => { if (!dd.cartoes.some((c) => c.id === a)) dd.cartoes.push(structuredClone(CARTOES_MODELO[a])); }, 'app: cartão adicionado'); },
+  'cartao-remover': (a) => { if (confirm('Remover este cartão?')) mutar((dd) => { dd.cartoes = dd.cartoes.filter((c) => c.id !== a); }, 'app: cartão removido'); },
+  bloquear: () => { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; telaPin(); },
+  sair: () => { if (confirm('Desconectar este aparelho? Você vai precisar do token de novo. Os dados no GitHub continuam lá.')) { S.store.sair(); S.comp.store.sair(); S.comp.dados = null; S.dados = null; telaConfig(); } },
 };
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
@@ -1113,11 +1671,33 @@ const MUDANCAS = {
     S.manterScroll = true;
     mutar((dd) => { const r = dd.regras.find((x) => x.id === rid); if (r) r[campo] = el.type === 'checkbox' ? el.checked : v.trim(); }, 'app: regra atualizada');
   },
+  orc: (v, a) => {
+    S.manterScroll = true;
+    mutar((dd) => {
+      dd.orcamento ||= { renda: null, compromissos: 0, guardarCasa: 0, margem: 0.1 };
+      if (a === 'margem') dd.orcamento.margem = Math.min(0.8, Math.max(0, (Number(v) || 0) / 100));
+      else { const n = lerNum(v); dd.orcamento[a] = n != null && n >= 0 ? n : (a === 'renda' ? null : 0); }
+    }, 'app: renda e compromissos');
+  },
   'dias-cobranca': (v) => { S.manterScroll = true; mutar((dd) => { dd.config ||= {}; dd.config.diasAntesCobranca = Math.max(0, Math.min(10, Number(v) || 0)); }, 'app: dias de cobrança'); },
 };
 app.addEventListener('change', (e) => {
   const el = e.target.closest('[data-chg]'); if (!el) return;
   const f = MUDANCAS[el.dataset.chg]; if (f) f(el.value, el.dataset.arg, el);
+});
+app.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'f-comp') return;
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Conectando…';
+  try {
+    await new Store().desbloquear(f.pin); // mesmo PIN que abre o app neste aparelho
+    await configurarComp({ owner: f.owner, repo: f.repo, token: f.token, nome: f.nome, pin: f.pin });
+  } catch (err) { S.comp.store.sair(); btn.disabled = false; btn.textContent = 'Conectar'; return toast(err.message, 4500); }
+  toast('Conectado. Buscando casa e viagens…');
+  S.comp.dados = null; S.comp.erro = ''; render();
+  await carregarComp({ forcar: true });
+  render();
 });
 let resizeT; let larguraAnt = window.innerWidth;
 window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (Math.abs(window.innerWidth - larguraAnt) > 80 && S.dados && !document.querySelector('.modal')) { larguraAnt = window.innerWidth; S.manterScroll = true; render(); } }, 250); });

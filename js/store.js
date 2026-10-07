@@ -34,10 +34,13 @@ async function decifrar(key, blob) {
 
 export class ErroConflito extends Error {}
 
-export class Store {
-  constructor() { this.key = null; this.token = null; this.sha = null; this.cfg = lsGet(K.cfg); }
+// Chaves do armazenamento local. O repositório compartilhado (casa e viagens) usa outro trio.
+export const CHAVES_COMPARTILHADO = { cfg: 'cc_comp_cfg', tok: 'cc_comp_tok', cache: 'cc_comp_cache' };
 
-  get configurado() { return !!(this.cfg && lsGet(K.tok)); }
+export class Store {
+  constructor(chaves = K) { this.K = chaves; this.key = null; this.token = null; this.sha = null; this.cfg = lsGet(chaves.cfg); }
+
+  get configurado() { return !!(this.cfg && lsGet(this.K.tok)); }
   get desbloqueado() { return !!this.token; }
 
   async gh(caminho, opts = {}) {
@@ -49,10 +52,10 @@ export class Store {
   }
 
   // Primeira configuração: testa o acesso e exige repositório privado.
-  async configurar({ owner, repo, branch = 'main', path = 'dados.json', token, pin }) {
+  async configurar({ owner, repo, branch = 'main', path = 'dados.json', token, pin, extra = {} }) {
     if (!pin || pin.length < 6) throw new Error('Use um PIN/senha com pelo menos 6 caracteres.');
     this.token = token.trim();
-    this.cfg = { owner: owner.trim(), repo: repo.trim(), branch: branch.trim() || 'main', path: path.trim() || 'dados.json' };
+    this.cfg = { owner: owner.trim(), repo: repo.trim(), branch: branch.trim() || 'main', path: path.trim() || 'dados.json', ...extra };
     const r = await this.gh(`/repos/${this.cfg.owner}/${this.cfg.repo}`);
     if (r.status === 401) throw new Error('Token inválido ou expirado.');
     if (r.status === 404) throw new Error('Repositório não encontrado — confira o nome e se o token tem acesso a ele.');
@@ -62,12 +65,12 @@ export class Store {
     if (info.permissions && !info.permissions.push) throw new Error('O token não tem permissão de escrita (Contents: Read and write).');
     const salt = crypto.getRandomValues(new Uint8Array(16));
     this.key = await derivar(pin, salt);
-    lsSet(K.cfg, this.cfg);
-    lsSet(K.tok, { salt: b64(salt), ...(await cifrar(this.key, this.token)) });
+    lsSet(this.K.cfg, this.cfg);
+    lsSet(this.K.tok, { salt: b64(salt), ...(await cifrar(this.key, this.token)) });
   }
 
   async desbloquear(pin) {
-    const t = lsGet(K.tok); if (!t) throw new Error('Aparelho não configurado.');
+    const t = lsGet(this.K.tok); if (!t) throw new Error('Aparelho não configurado.');
     const key = await derivar(pin, unb64(t.salt));
     try { this.token = await decifrar(key, t); } catch { throw new Error('PIN incorreto.'); }
     this.key = key;
@@ -75,13 +78,15 @@ export class Store {
 
   bloquear() { this.token = null; this.key = null; }
 
-  sair() { this.bloquear(); Object.values(K).forEach((k) => localStorage.removeItem(k)); this.cfg = null; this.sha = null; }
+  sair() { this.bloquear(); Object.values(this.K).forEach((k) => localStorage.removeItem(k)); this.cfg = null; this.sha = null; }
+
+  atualizarCfg(campos) { this.cfg = { ...this.cfg, ...campos }; lsSet(this.K.cfg, this.cfg); }
 
   async lerCache() {
-    const c = lsGet(K.cache); if (!c || !this.key) return null;
+    const c = lsGet(this.K.cache); if (!c || !this.key) return null;
     try { return JSON.parse(await decifrar(this.key, c)); } catch { return null; }
   }
-  async gravarCache(obj) { if (this.key) lsSet(K.cache, await cifrar(this.key, JSON.stringify(obj))); }
+  async gravarCache(obj) { if (this.key) lsSet(this.K.cache, await cifrar(this.key, JSON.stringify(obj))); }
 
   // Retorna { dados, sha } ou { dados:null } se o arquivo ainda não existe.
   async carregar() {
