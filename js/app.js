@@ -69,12 +69,12 @@ function telaConfig(erro = '') {
         <label class="campo"><span>Repita o PIN</span><input class="inp" name="pin2" type="password" inputmode="numeric" minlength="6" required></label>
       </div>
       <details class="small"${erro && /compartilhad|casa/i.test(erro) ? ' open' : ''}><summary class="muted">Casa e viagens (repositório compartilhado do casal — opcional)</summary>
-        <p class="tiny muted">Fica numa organização do GitHub da qual vocês dois fazem parte. Use um token separado, criado com a organização como dono, só com esse repositório.</p>
+        <p class="tiny muted">Fica num repositório privado à parte, que vocês dois acessam (o outro entra como colaborador).</p>
         <div class="lado" style="margin-top:10px">
-          <label class="campo"><span>Organização</span><input class="inp" name="comp_owner" autocapitalize="off" spellcheck="false"></label>
+          <label class="campo"><span>Dono do repositório (usuário)</span><input class="inp" name="comp_owner" autocapitalize="off" spellcheck="false"></label>
           <label class="campo"><span>Repositório</span><input class="inp" name="comp_repo" value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label>
         </div>
-        <label class="campo"><span>Token da organização (github_pat_…)</span><input class="inp" name="comp_token" type="password" autocapitalize="off" spellcheck="false"></label>
+        <label class="campo"><span>Token com acesso a esse repositório</span><input class="inp" name="comp_token" type="password" autocapitalize="off" spellcheck="false"></label>
         <label class="campo"><span>Seu nome (como o outro vai te ver)</span><input class="inp" name="comp_nome"></label>
       </details>
       <details class="small"><summary class="muted">Avançado</summary>
@@ -202,7 +202,7 @@ const euId = () => slug(S.comp.store.cfg?.eu || '');
 
 async function configurarComp({ owner, repo, token, nome, pin }) {
   if (!String(nome || '').trim()) throw new Error('Informe seu nome.');
-  if (!String(owner || '').trim() || !String(token || '').trim()) throw new Error('Informe a organização e o token.');
+  if (!String(owner || '').trim() || !String(token || '').trim()) throw new Error('Informe o dono do repositório e o token.');
   await S.comp.store.configurar({ owner, repo: repo || 'casa-viagens-dados', path: 'compartilhado.json', token, pin, extra: { eu: String(nome).trim() } });
 }
 
@@ -784,11 +784,11 @@ function vAjustes() {
     <h2>Casa e viagens (compartilhado)</h2>
     ${cc.configurado ? `<p class="small" style="margin:6px 0 0">Conectado a <b>${esc(cc.cfg.owner)}/${esc(cc.cfg.repo)}</b> como <b>${esc(cc.cfg.eu)}</b>.${S.comp.erro ? ` <span class="erro-txt">${esc(S.comp.erro)}</span>` : ''}</p>
       <div class="row wrap"><button class="btn" data-act="comp-recarregar">${icon('refresh')} Atualizar agora</button><button class="btn perigo" data-act="comp-sair">Desconectar casa e viagens</button></div>`
-    : `<p class="small muted" style="margin:6px 0 0">Para os dois verem e editarem casa e viagens, o arquivo fica num repositório de uma organização do GitHub da qual vocês dois fazem parte. Cada um usa o próprio token, com a organização como dono e só esse repositório (Contents: Read and write).</p>
+    : `<p class="small muted" style="margin:6px 0 0">Para os dois verem e editarem casa e viagens, o arquivo fica num repositório privado à parte, na sua conta ou na do outro, com o outro como colaborador. Quem é dono do repositório usa um token fine-grained que inclua esse repositório (Contents: Read and write); o colaborador usa um token clássico com o escopo repo.</p>
       <form class="form" id="f-comp" autocomplete="off">
-        <div class="lado"><label class="campo"><span>Organização</span><input class="inp" name="owner" required autocapitalize="off" spellcheck="false"></label>
+        <div class="lado"><label class="campo"><span>Dono do repositório (usuário)</span><input class="inp" name="owner" required autocapitalize="off" spellcheck="false"></label>
         <label class="campo"><span>Repositório (privado)</span><input class="inp" name="repo" required value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label></div>
-        <label class="campo"><span>Token da organização (github_pat_…)</span><input class="inp" name="token" type="password" required autocapitalize="off" spellcheck="false"></label>
+        <label class="campo"><span>Token com acesso a esse repositório</span><input class="inp" name="token" type="password" required autocapitalize="off" spellcheck="false"></label>
         <div class="lado"><label class="campo"><span>Seu nome</span><input class="inp" name="nome" required></label>
         <label class="campo"><span>PIN deste aparelho</span><input class="inp" name="pin" type="password" inputmode="numeric" required></label></div>
         <button class="btn pri" type="submit">Conectar</button>

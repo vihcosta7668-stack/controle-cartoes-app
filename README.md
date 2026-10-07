@@ -9,9 +9,9 @@ Este repositório é **público e só contém código**. Os dados ficam em um re
 | Dado | Onde fica | Quem acessa |
 |---|---|---|
 | Faturas, cartões, renda, contas fixas, quem me deve | `controle-cartoes-dados` (privado, na conta pessoal de cada um) | só o dono |
-| Casa (etapas, pagamentos, saldo guardado de cada um) e viagens | `casa-viagens-dados` (privado, numa organização do GitHub do casal) | os dois |
+| Casa (etapas, pagamentos, saldo guardado de cada um) e viagens | `casa-viagens-dados` (privado, na conta de um dos dois, com o outro como colaborador) | os dois |
 
-Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal e dois tokens: um da conta pessoal e um da organização. O token fine-grained só enxerga repositórios de um único dono e não funciona para colaborador de repositório de outra pessoa; por isso o compartilhado fica numa organização.
+Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal. O token fine-grained só enxerga repositórios do próprio dono e não funciona para colaborador; por isso quem é colaborador do repositório compartilhado usa um token clássico.
 
 ## Publicar
 
@@ -31,10 +31,12 @@ Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal e 
 
 ## Casa e viagens (uma vez)
 
-1. Uma pessoa cria uma organização gratuita (*github.com → Your organizations → New organization → Free*) e convida a outra como **Owner** (dono). Assim os tokens dos dois são aprovados sem espera.
-2. Na organização, crie o repositório **privado** `casa-viagens-dados` (pode ser vazio; o app cria o `compartilhado.json`).
-3. Cada pessoa gera um token fine-grained com **Resource owner = a organização**, *Only select repositories* → `casa-viagens-dados`, *Contents: Read and write*.
-4. No app: *Ajustes → Casa e viagens* → organização, repositório, token, seu nome e o PIN deste aparelho. Use sempre o mesmo nome; é por ele que o app sabe quem você é.
+1. Na sua conta, crie o repositório **privado** `casa-viagens-dados` (pode ser vazio; o app cria o `compartilhado.json`).
+2. *Settings → Collaborators → Add people* → convide a outra pessoa. Ela precisa aceitar o convite (e-mail ou github.com/notifications).
+3. Tokens:
+   - Dono do repositório: edite o token fine-grained que o app já usa (*Settings → Developer settings → Fine-grained tokens*) e acrescente `casa-viagens-dados` em *Repository access*. O mesmo token serve para os dois campos.
+   - Colaborador: crie um token **clássico** (*Personal access tokens → Tokens (classic) → Generate new token*) com o escopo `repo` e uma data de validade. Esse tipo de token alcança todos os repositórios privados da conta dele; fica no aparelho cifrado pelo PIN, mas se vazar, revogue na hora.
+4. No app: *Ajustes → Casa e viagens* → dono do repositório (o seu usuário), repositório, token, seu nome e o PIN deste aparelho. Use sempre o mesmo nome; é por ele que o app sabe quem você é.
 
 Quando os dois editam ao mesmo tempo, o app baixa a versão do outro, reaplica a sua alteração e salva de novo.
 
