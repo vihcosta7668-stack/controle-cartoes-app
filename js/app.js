@@ -1,7 +1,7 @@
 import { Store, ErroConflito } from './store.js';
 import {
   hoje as hojeISO, brl, num, dataBR, diaMes, mesCurto, difDias, addMeses, round2, cents, parseValor,
-  detectaParcela, raizDesc, uid, slug,
+  detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
 } from './util.js';
 import * as C from './calc.js';
 import { parseNubankCSV, parseItauPages, lerPaginasPDF } from './parsers.js';
@@ -313,7 +313,7 @@ function vFaturas() {
     const q = quemTexto(l);
     const info = [l.data ? diaMes(l.data) : null, l.parcela ? `parcela ${l.parcela.n}/${l.parcela.total}` : null, l.fixo ? 'fixo' : null, l.origem === 'manual' ? 'lançado à mão' : null, q || null].filter(Boolean).join(' · ');
     const alvo = l.origem === 'projecao' ? l.id.split('_').slice(1, 3).join('_') : l.id;
-    return `<li class="click ${l.previsto || l.origem === 'previsto' ? 'previsto' : ''}" data-act="editar-lanc" data-arg="${esc(alvo)}">
+    return `<li class="click ${l.previsto || l.origem === 'previsto' ? 'previsto' : ''}" data-act="editar-lanc" data-arg="${esc(alvo)}${l.origem === 'projecao' ? '|proj' : ''}">
       <div class="desc"><b>${esc(l.desc)}</b><small>${esc(info)}</small></div>
       <div class="valor">${brl(l.valor)}${Math.abs(minha - l.valor) > 0.004 ? `<small>minha ${brl(minha)}</small>` : ''}</div></li>`;
   };
@@ -355,7 +355,9 @@ function vFaturas() {
     <div class="card-h"><h2>Lançamentos <span class="muted small">(${r.lancadas.length})</span></h2>
       <div class="seg">${[['todos', 'Todos'], ['meus', 'Meus'], ['outros', 'Dos outros']].map(([k, t]) => `<button data-act="fat-filtro" data-arg="${k}" aria-pressed="${filtro === k}">${t}</button>`).join('')}</div></div>
     <ul class="lista">${lanc.map(linha).join('') || '<li class="vazio">Nada lançado nesta fatura.</li>'}</ul>
-    ${prev.length ? `<div class="sec-tit">Previsto — parcelas e fixos que devem cair</div><ul class="lista">${prev.map(linha).join('')}</ul>` : ''}
+    ${prev.length ? `<div class="sec-tit">Previsto — parcelas e fixos que devem cair</div>
+      <p class="tiny muted" style="margin:0 0 4px">Já contam no total e em "Me devem". ${c.id === 'itau' || (d.faturas || []).some((f) => f.cartao === c.id && f.origem === 'pdf') ? `Viram lançamentos quando você importar o PDF desta fatura (depois do fechamento em ${dataBR(r.fechamento)}).` : 'Viram lançamentos quando você importar o CSV de novo.'} Toque para dizer de quem é; gasto fixo dá para trocar de cartão ou cancelar.</p>
+      <ul class="lista">${prev.map(linha).join('')}</ul>` : ''}
   </section>`;
 }
 
@@ -371,8 +373,11 @@ function vPessoas() {
   const sit = { atrasado: '<span class="tag bad">atrasado</span>', cobrar: '<span class="tag warn">cobrar</span>', aberto: '<span class="tag info">fatura aberta</span>', futuro: '<span class="tag">futuro</span>', pago: '<span class="tag ok">pago</span>' };
   const itemLi = (it) => {
     const c = cartao(it.cartao);
-    return `<li class="${it.pago ? 'pago' : ''}"><label class="check"><input type="checkbox" data-chg="item-pago" data-arg="${esc(it.id)}" ${it.pago ? 'checked' : ''} ${it.tipo === 'grupo' && it.pago ? 'disabled' : ''} aria-label="Pago"></label>
-      <div class="desc"><b>${esc(it.desc)}</b><small>${esc(c?.nome || '')} · fatura ${diaMes(it.venc)}${it.pagoParcial > 0 && !it.pago ? ` · pagou ${brl(it.pagoParcial)}` : ''}</small></div>
+    const marcar = it.tipo === 'projecao'
+      ? '<span class="check" style="width:20px" aria-hidden="true"></span>'
+      : `<label class="check"><input type="checkbox" data-chg="item-pago" data-arg="${esc(it.id)}" ${it.pago ? 'checked' : ''} ${it.tipo === 'grupo' && it.pago ? 'disabled' : ''} aria-label="Pago"></label>`;
+    return `<li class="${it.pago ? 'pago' : ''} ${it.tipo === 'projecao' ? 'previsto' : ''}">${marcar}
+      <div class="desc"><b>${esc(it.desc)}</b><small>${esc(c?.nome || '')} · fatura ${diaMes(it.venc)}${it.previsto || it.tipo === 'projecao' ? ' · previsto' : ''}${it.pagoParcial > 0 && !it.pago ? ` · pagou ${brl(it.pagoParcial)}` : ''}</small></div>
       ${sit[it.situacao] || ''}<div class="valor">${brl(it.pago ? it.valor : it.falta)}</div></li>`;
   };
   return `
@@ -388,7 +393,7 @@ function vPessoas() {
   ${pessoas.map((p) => {
     const aberto = S.abertos.has(p.pessoa.id);
     const pend = p.itens.filter((i) => !i.pago && i.situacao !== 'futuro').sort((a, b) => a.venc.localeCompare(b.venc));
-    const futuros = p.itens.filter((i) => !i.pago && i.situacao === 'futuro');
+    const futuros = [...p.itens.filter((i) => !i.pago && i.situacao === 'futuro'), ...p.projetados].sort((a, b) => a.venc.localeCompare(b.venc));
     const pagos = p.itens.filter((i) => i.pago).sort((a, b) => b.venc.localeCompare(a.venc));
     const cartoesPend = [...new Set(pend.map((i) => i.cartao))];
     return `<section class="card" id="p-${p.pessoa.id}">
@@ -400,7 +405,7 @@ function vPessoas() {
       ${aberto ? `<div style="margin-top:10px">
         ${cartoesPend.length ? `<div class="row wrap" style="margin-bottom:6px">${cartoesPend.map((cid) => `<button class="btn sm pri" data-act="cobrar" data-arg="${p.pessoa.id}|${cid}">${icon('chat')} Cobrar ${esc(cartao(cid).nome)}</button>`).join('')}</div>` : ''}
         <ul class="lista">${pend.map(itemLi).join('') || '<li class="vazio">Nada pendente.</li>'}</ul>
-        ${futuros.length ? `<div class="sec-tit">Próximas faturas</div><ul class="lista">${futuros.slice(0, 8).map(itemLi).join('')}</ul>` : ''}
+        ${futuros.length ? `<div class="sec-tit">Próximas faturas</div><ul class="lista">${futuros.slice(0, 8).map(itemLi).join('')}</ul>${futuros.length > 8 ? `<p class="tiny muted" style="margin:4px 0 0">+ ${futuros.length - 8} parcelas depois dessas.</p>` : ''}` : ''}
         ${pagos.length ? (S.verPagos.has(p.pessoa.id) ? `<div class="sec-tit">Pagos</div><ul class="lista">${pagos.map(itemLi).join('')}</ul>` : `<button class="btn sm ghost" data-act="ver-pagos" data-arg="${p.pessoa.id}">Ver pagos (${pagos.length})</button>`) : ''}
         <div class="row" style="margin-top:8px"><button class="btn sm ghost" data-act="pessoa-form" data-arg="${p.pessoa.id}">Editar ${esc(p.pessoa.nome)}</button></div>
       </div>` : ''}
@@ -500,8 +505,8 @@ function vFuturo() {
       <div class="valor">${brl(p.valor)}<small>${p.faltam ? `falta ${brl(p.restante)}` : ''}</small></div>${!p.faltam ? '<span class="tag ok">acaba</span>' : ''}</li>`).join('') || '<li class="vazio">Sem parcelas em andamento.</li>'}</ul>
   </section>
   <section class="card">
-    <div class="card-h"><h2>Gastos fixos (todo mês)</h2><span class="small muted">${brl(fixos.reduce((s, f) => s + f.l.valor, 0))}/mês · minha parte ${brl(fixos.reduce((s, f) => s + f.minha, 0))}</span></div>
-    <ul class="lista">${fixos.map((f) => `<li class="click" data-act="editar-lanc" data-arg="${f.l.id}"><div class="desc"><b>${esc(f.l.desc)}</b><small>${esc(cartao(f.l.cartao).nome)} · último em ${diaMes(f.l.venc)}${f.outros.length ? ' · ' + esc(f.outros.map((o) => nome(o.pessoa)).join(', ')) : ''}</small></div><div class="valor">${brl(f.l.valor)}</div></li>`).join('') || '<li class="vazio">Nenhum gasto marcado como fixo.</li>'}</ul>
+    <div class="card-h"><h2>Gastos fixos (todo mês)</h2><span class="small muted">${brl(fixos.reduce((s, f) => s + (f.l.valorPrevisto ?? f.l.valor), 0))}/mês · minha parte ${brl(fixos.reduce((s, f) => s + f.minha, 0))}</span></div>
+    <ul class="lista">${fixos.map((f) => `<li class="click" data-act="editar-lanc" data-arg="${f.l.id}"><div class="desc"><b>${esc(f.l.desc)}</b><small>${esc(cartao(f.l.cartao).nome)} · último em ${diaMes(f.l.venc)}${f.outros.length ? ' · ' + esc(f.outros.map((o) => nome(o.pessoa)).join(', ')) : ''}</small></div><div class="valor">${brl(f.l.valorPrevisto ?? f.l.valor)}</div></li>`).join('') || '<li class="vazio">Nenhum gasto marcado como fixo.</li>'}</ul>
     <p class="tiny muted" style="margin:8px 0 0">Para marcar um gasto como fixo, abra o lançamento e ligue "Gasto fixo". Se uma fatura fechada vier sem ele, o app entende que foi cancelado.</p>
   </section>`;
 }
@@ -566,6 +571,12 @@ function modalEditarLanc(id, preset = {}) {
     desc: l?.desc || '', valor: l ? l.valor : '', parcN: l?.parcela?.n || 1, parcT: l?.parcela?.total || 1, fixo: !!l?.fixo, obs: l?.obs || '',
     modo: 'meu', pessoa: pessoasOutras()[0]?.id || '', metade: false, sel: new Set([EU]), igual: true, valores: {}, grupo: l?.grupo || '', pagos: {}, criarRegra: false,
   };
+  // outras parcelas da mesma compra (mesmo cartão, descrição, nº de parcelas e mês de início)
+  const inicio = (x) => addMeses(x.venc, -x.parcela.n).slice(0, 7);
+  const cadeia = l?.parcela ? d.lancamentos.filter((x) => x.id !== l.id && x.cartao === l.cartao && x.parcela && x.parcela.total === l.parcela.total
+    && raizDesc(x.desc) === raizDesc(l.desc) && inicio(x) === inicio(l)) : [];
+  ed.todasParcelas = cadeia.length > 0;
+  ed.fxValor = l ? (l.valorPrevisto ?? l.valor) : ''; ed.fxCartao = l?.cartao || cid; ed.fxCancelado = !!l?.fixoEncerrado;
   if (l) {
     const dv = l.divisao || [];
     dv.forEach((x) => { ed.pagos[x.pessoa] = !!x.pago; ed.valores[x.pessoa] = x.valor; });
@@ -593,6 +604,7 @@ function modalEditarLanc(id, preset = {}) {
         <label class="campo"><span>Parcela</span><span class="row"><input class="inp" type="number" min="1" max="48" data-e="parcN" value="${ed.parcN}" style="width:70px"> de <input class="inp" type="number" min="1" max="48" data-e="parcT" value="${ed.parcT}" style="width:70px"></span></label></div>
         <p class="tiny muted" style="margin:-4px 0 0">Entra na fatura que vence em <b>${dataBR(ed.venc)}</b>${ed.vencManual ? '' : ' (pela data da compra e o fechamento do cartão)'}.</p>`;
     } else {
+      if (preset.daProjecao) corpo += `<div class="alerta info small">A previsão vem deste lançamento de ${dataBR(l.venc)}. Mudar "De quem é" aqui vale para ele e para os próximos meses.</div>`;
       corpo += `<div><b>${esc(l.desc)}</b><div class="small muted">${esc(cartao(l.cartao).nome)} · ${l.data ? dataBR(l.data) : ''} · fatura ${dataBR(l.venc)}${l.parcela ? ` · parcela ${l.parcela.n}/${l.parcela.total}` : ''}${l.origem === 'previsto' ? ' · previsto pelo PDF' : ''}</div>
         <div class="num" style="font-size:22px;font-weight:680;margin-top:4px">${brl(l.valor)}</div></div>`;
     }
@@ -626,7 +638,22 @@ function modalEditarLanc(id, preset = {}) {
         corpo += (d.grupos || []).length ? `<label class="campo"><span>Compra em grupo</span><select class="inp" data-e="grupo"><option value="">—</option>${d.grupos.map((g) => `<option value="${g.id}" ${g.id === ed.grupo ? 'selected' : ''}>${esc(g.nome)}</option>`).join('')}</select></label>
           <p class="tiny muted" style="margin:0">A divisão e os pagamentos ficam na tela do grupo.</p>` : '<p class="small muted">Nenhum grupo criado. Crie em Grupos.</p>';
       }
+      if (cadeia.length && ed.modo !== 'grupo') {
+        corpo += `<label class="check small"><input type="checkbox" data-e="todasParcelas" ${ed.todasParcelas ? 'checked' : ''}> Aplicar essa divisão a todas as parcelas desta compra (${cadeia.length + 1} no app)</label>
+          <p class="tiny muted" style="margin:-6px 0 0">As parcelas que ainda vão vir seguem a mesma divisão sozinhas.</p>`;
+      }
       corpo += `<label class="check"><input type="checkbox" data-e="fixo" ${ed.fixo ? 'checked' : ''}> Gasto fixo (vem todo mês)</label>`;
+      if (!ed.novo && ed.fixo && !l.parcela) {
+        const mudou = ed.fxCartao !== l.cartao;
+        const nc = cartao(ed.fxCartao);
+        corpo += `<div class="card plano form" style="background:var(--surface-2)">
+          <div class="small" style="font-weight:600">Próximos meses</div>
+          <div class="lado"><label class="campo"><span>Valor previsto (R$)</span><input class="inp" inputmode="decimal" data-e="fxValor" value="${esc(typeof ed.fxValor === 'number' ? num(ed.fxValor) : ed.fxValor)}" ${ed.fxCancelado ? 'disabled' : ''}></label>
+          <label class="campo"><span>Vem em qual cartão</span><select class="inp" data-e="fxCartao" ${ed.fxCancelado ? 'disabled' : ''}>${d.cartoes.map((c) => `<option value="${c.id}" ${c.id === ed.fxCartao ? 'selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></label></div>
+          ${mudou && !ed.fxCancelado ? `<p class="tiny" style="margin:0">Para de ser previsto no ${esc(cartao(l.cartao).nome)} e entra como previsto no ${esc(nc.nome)} a partir da fatura de ${dataBR(C.faturaAberta(nc, S.hoje))}.</p>` : ''}
+          <label class="check small"><input type="checkbox" data-e="fxCancelado" ${ed.fxCancelado ? 'checked' : ''}> Não vem mais (cancelei)</label>
+        </div>`;
+      }
       if (ed.modo !== 'grupo' && ed.parcT <= 1) {
         corpo += `<label class="check small"><input type="checkbox" data-e="criarRegra" ${ed.criarRegra ? 'checked' : ''}> Criar regra: próximas compras com "${esc(raizDesc(ed.desc || l?.desc || '').slice(0, 30))}" entram assim</label>`;
       }
@@ -647,7 +674,7 @@ function modalEditarLanc(id, preset = {}) {
           if (k === 'parcT' && ed.parcN > ed.parcT) ed.parcN = ed.parcT;
           if (k === 'desc') { const p = detectaParcela(ed.desc); if (p && ed.parcT === 1) { ed.parcN = p.n; ed.parcT = p.total; return true; } }
           // campos de texto não redesenham o formulário (para não perder o foco ao digitar)
-          return !['desc', 'valor', 'obs'].includes(k);
+          return !['desc', 'valor', 'obs', 'fxValor'].includes(k);
         }
         if (t.dataset.eVal) { ed.valores[t.dataset.eVal] = parseValor(t.value); return false; }
         if (t.dataset.ePago) { ed.pagos[t.dataset.ePago] = t.checked; return false; }
@@ -690,6 +717,40 @@ function modalEditarLanc(id, preset = {}) {
         Object.assign(alvo, { cartao: ed.cartao, data: ed.data, venc: ed.venc, desc: ed.desc.trim(), valor, parcela: ed.parcT > 1 ? { n: ed.parcN, total: ed.parcT } : null, tipo: valor < 0 ? 'estorno' : 'compra' });
       }
       Object.assign(alvo, { divisao: grupo ? [] : divisao, grupo, fixo: !!ed.fixo, obs: ed.obs || '' });
+      if (ed.todasParcelas && cadeia.length) {
+        for (const c of cadeia) {
+          const x = dd.lancamentos.find((y) => y.id === c.id); if (!x) continue;
+          x.grupo = grupo;
+          x.divisao = grupo ? [] : divisao.map((p) => {
+            const antes = (x.divisao || []).find((y) => y.pessoa === p.pessoa);
+            return { pessoa: p.pessoa, valor: round2(p.valor * (x.valor / valor)), pago: !!antes?.pago, pagoEm: antes?.pagoEm || null };
+          });
+        }
+      }
+      if (!ed.novo && alvo.fixo && !alvo.parcela) {
+        const vp = parseValor(ed.fxValor);
+        if (Number.isFinite(vp) && cents(vp) !== cents(alvo.valor)) alvo.valorPrevisto = round2(vp); else delete alvo.valorPrevisto;
+        if (ed.fxCancelado) alvo.fixoEncerrado = true;
+        else if (ed.fxCartao !== alvo.cartao) {
+          alvo.fixoEncerrado = true;
+          const nc = dd.cartoes.find((c) => c.id === ed.fxCartao);
+          const ab = C.faturaAberta(nc, S.hoje);
+          // mesma data do mês da cobrança antiga, dentro do ciclo da fatura aberta do novo cartão
+          const dia = alvo.data ? partes(alvo.data).d : partes(S.hoje).d;
+          let data = S.hoje;
+          for (const k of [-1, 0, -2, 1]) {
+            const ref = partes(addMeses(ab.slice(0, 7) + '-01', k));
+            const cand = ymd(ref.y, ref.m, Math.min(dia, diasNoMes(ref.y, ref.m)));
+            if (C.vencDaCompra(nc, cand) === ab) { data = cand; break; }
+          }
+          const v = alvo.valorPrevisto ?? alvo.valor;
+          dd.lancamentos.push({
+            id: uid('l'), cartao: nc.id, venc: ab, data, desc: alvo.desc, valor: v, tipo: 'compra', parcela: null, fixo: true,
+            divisao: (alvo.divisao || []).map((p) => ({ pessoa: p.pessoa, valor: round2(p.valor * (v / alvo.valor)), pago: false, pagoEm: null })),
+            grupo: null, obs: `Mudou do ${cartao(alvo.cartao).nome}`, origem: 'previsto', refVenc: null,
+          });
+        } else delete alvo.fixoEncerrado;
+      }
       if (ed.criarRegra && ed.modo !== 'grupo') {
         dd.regras ||= [];
         const contem = (alvo.desc || '').replace(/\s*-?\s*(parcela\s*)?\d{1,2}\s*\/\s*\d{1,2}\s*$/i, '').trim();
@@ -963,7 +1024,7 @@ const ACOES = {
   'recarregar-pagina': () => location.reload(),
   importar: (a) => { cartaoImport = a || null; arquivo.click(); },
   'novo-lanc': (a) => { const [cid, venc] = (a || '').split('|'); modalEditarLanc(null, { cartao: cid || undefined, venc: venc || undefined }); },
-  'editar-lanc': (a) => modalEditarLanc(a),
+  'editar-lanc': (a) => { const [id, proj] = a.split('|'); modalEditarLanc(id, { daProjecao: !!proj }); },
   'apagar-lanc': (a) => { if (confirm('Apagar este pagamento registrado à mão?')) mutar((dd) => { dd.lancamentos = dd.lancamentos.filter((x) => x.id !== a); }, 'app: pagamento apagado'); },
   'ver-fatura': (a) => { const [c, v] = a.split('|'); S.fat = { cartao: c, venc: v, filtro: 'todos' }; S.view = 'faturas'; render(); window.scrollTo(0, 0); },
   'fat-cartao': (a) => { S.fat.cartao = a; S.fat.venc = null; render(); },

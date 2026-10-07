@@ -90,7 +90,10 @@ export function importarFatura(dadosIn, imp) {
       l = novaLinha(b, imp.cartao, venc, imp.origem);
       // compra lançada à mão antes: mesmo valor, data até 3 dias de diferença
       const m = manuais.find((x) => cents(x.valor) === cents(b.valor) && x.data && Math.abs(difDias(x.data, b.data)) <= 3);
-      const p = !m && b.parcela ? previstas.find((x) => x.parcela && x.parcela.total === b.parcela.total && x.parcela.n === b.parcela.n && raizDesc(x.desc) === raizDesc(b.desc)) : null;
+      const chave = (s) => (raizDesc(s).split(/[^a-z0-9]+/).find((w) => w.length >= 4) || '');
+      const p = m ? null : b.parcela
+        ? previstas.find((x) => x.parcela && x.parcela.total === b.parcela.total && x.parcela.n === b.parcela.n && raizDesc(x.desc) === raizDesc(b.desc))
+        : previstas.find((x) => x.fixo && !x.parcela && chave(x.desc) && normDesc(b.desc).includes(chave(x.desc)));
       const fonte = m || p;
       if (fonte) {
         l.divisao = escalarDivisao(fonte.divisao, fonte.valor, l.valor).map((d, i) => ({ ...d, pago: !!fonte.divisao[i]?.pago, pagoEm: fonte.divisao[i]?.pagoEm || null }));

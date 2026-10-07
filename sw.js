@@ -1,5 +1,5 @@
 // Service worker: guarda só os arquivos do app (nunca os dados do GitHub).
-const VERSAO = 'cartoes-v1';
+const VERSAO = 'cartoes-v2';
 const ARQUIVOS = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'js/app.js', 'js/ui.js', 'js/calc.js', 'js/util.js', 'js/pix.js', 'js/parsers.js', 'js/importer.js', 'js/store.js',

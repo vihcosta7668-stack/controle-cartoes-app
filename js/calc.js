@@ -115,12 +115,13 @@ export function previstasPara(dados, cartaoId, venc, hoje) {
     if (!fixos.has(r) || l.venc > fixos.get(r).venc) fixos.set(r, l);
   }
   for (const [r, l] of fixos) {
+    if (l.fixoEncerrado) continue; // cancelado ou mudou de cartão
     if (raizesPresentes.has(r)) continue;
     // se uma fatura fechada posterior não trouxe esse fixo, ele foi cancelado
     if ([...reaisFechadas].some((v) => v > l.venc && v < venc)) continue;
     out.push({
-      id: `prev_${l.id}_fixo_${venc}`, cartao: cartaoId, venc, data: null, desc: l.desc, valor: l.valor,
-      tipo: 'compra', parcela: null, fixo: true, divisao: escalarDivisao(l.divisao, l.valor, l.valor),
+      id: `prev_${l.id}_fixo_${venc}`, cartao: cartaoId, venc, data: null, desc: l.desc, valor: l.valorPrevisto ?? l.valor,
+      tipo: 'compra', parcela: null, fixo: true, divisao: escalarDivisao(l.divisao, l.valor, l.valorPrevisto ?? l.valor),
       grupo: l.grupo || null, origem: 'projecao', previsto: true,
     });
   }
@@ -220,6 +221,7 @@ export function gastosFixos(dados, hoje) {
     if (!ult.has(k) || l.venc > ult.get(k).venc) ult.set(k, l);
   }
   return [...ult.values()].filter((l) => {
+    if (l.fixoEncerrado) return false;
     const c = cartaoPorId(dados, l.cartao);
     const ab = faturaAberta(c, hoje);
     if (difMeses(l.venc, ab) > 3) return false;
@@ -268,12 +270,13 @@ export function cronogramaGrupo(dados, g) {
 export function itensAReceber(dados, hoje) {
   const itens = [];
   for (const l of dados.lancamentos) {
-    if (l.tipo === 'pagamento' || l.grupo || l.origem === 'previsto') continue;
+    if (l.tipo === 'pagamento' || l.grupo) continue;
     for (const d of l.divisao || []) {
       if (d.pessoa === EU) continue;
       itens.push({
         id: `${l.id}|${d.pessoa}`, tipo: 'linha', lancId: l.id, pessoa: d.pessoa, cartao: l.cartao, venc: l.venc,
         data: l.data, desc: l.desc, valor: round2(d.valor), falta: d.pago ? 0 : round2(d.valor), pago: !!d.pago, pagoEm: d.pagoEm || null,
+        previsto: l.origem === 'previsto',
       });
     }
   }
@@ -299,6 +302,7 @@ export function situacaoItem(dados, it, hoje) {
 }
 
 // Parcelas futuras (ainda não lançadas) que vão gerar dívida por pessoa
+// Parcelas que ainda nem estão em nenhuma fatura (projeção). { pessoa: { total, itens } }
 export function futurasPorPessoa(dados, hoje, meses = 24) {
   const out = {};
   for (const c of dados.cartoes) {
@@ -307,10 +311,12 @@ export function futurasPorPessoa(dados, hoje, meses = 24) {
       const v = vencSeguinte(c, ab, k);
       for (const l of previstasPara(dados, c.id, v, hoje)) {
         if (l.grupo || l.fixo) continue; // grupos entram pelo cronograma; fixos não são dívida futura
-        for (const d of l.divisao || []) out[d.pessoa] = round2((out[d.pessoa] || 0) + d.valor);
-      }
-      for (const l of dados.lancamentos.filter((x) => x.cartao === c.id && x.venc === v && x.origem === 'previsto' && !x.grupo)) {
-        for (const d of l.divisao || []) out[d.pessoa] = round2((out[d.pessoa] || 0) + d.valor);
+        for (const d of l.divisao || []) {
+          if (d.pessoa === EU) continue;
+          out[d.pessoa] ||= { total: 0, itens: [] };
+          out[d.pessoa].total = round2(out[d.pessoa].total + d.valor);
+          out[d.pessoa].itens.push({ id: `${l.id}|${d.pessoa}`, tipo: 'projecao', pessoa: d.pessoa, cartao: c.id, venc: v, desc: l.desc, valor: d.valor, falta: d.valor, pago: false, situacao: 'futuro' });
+        }
       }
     }
   }
@@ -324,12 +330,13 @@ export function resumoPessoas(dados, hoje) {
     const meus = itens.filter((i) => i.pessoa === p.id);
     const pend = meus.filter((i) => !i.pago && i.situacao !== 'futuro');
     const fut = meus.filter((i) => i.situacao === 'futuro');
+    const proj = futuras[p.id] || { total: 0, itens: [] };
     return {
-      pessoa: p, itens: meus,
+      pessoa: p, itens: meus, projetados: proj.itens,
       falta: round2(pend.reduce((s, i) => s + i.falta, 0)),
       atrasado: round2(pend.filter((i) => i.situacao === 'atrasado').reduce((s, i) => s + i.falta, 0)),
       cobrarAgora: pend.some((i) => i.situacao === 'cobrar' || i.situacao === 'atrasado'),
-      futuro: round2(fut.reduce((s, i) => s + i.falta, 0) + (futuras[p.id] || 0)),
+      futuro: round2(fut.reduce((s, i) => s + i.falta, 0) + proj.total),
       pago: round2(meus.reduce((s, i) => s + (i.tipo === 'grupo' ? (i.pagoParcial || 0) : (i.pago ? i.valor : 0)), 0)),
     };
   });
