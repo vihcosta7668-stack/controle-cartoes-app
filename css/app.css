@@ -1,8 +1,9 @@
 :root {
-  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f1f3f6; --line: #e3e6eb;
-  --ink: #16191f; --ink-2: #4a5160; --ink-3: #7b8394;
-  --accent: #2459c4; --accent-ink: #ffffff; --accent-soft: #e8effc;
-  --s-minha: #2a78d6; --s-outros: #1baf7a;
+  --bg: #f8f5f6; --surface: #ffffff; --surface-2: #f4eef0; --line: #e9e0e4;
+  --ink: #1d1619; --ink-2: #54484e; --ink-3: #85777e;
+  --accent: #8c1d40; --accent-2: #6e2a5a; --accent-ink: #ffffff; --accent-soft: #f7e6ec;
+  --p1: #8c1d40; --p2: #c0577a; --p3: #6e2a5a; --p4: #a8705f;
+  --s-minha: #a8325e; --s-outros: #1baf7a;
   --ok: #0a7d32; --ok-soft: #e6f4ea; --warn: #9a5b00; --warn-soft: #fdf1dc; --bad: #b42323; --bad-soft: #fbe8e8;
   --nubank: #820ad1; --itau: #ec7000;
   --r: 14px; --r-sm: 9px; --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
@@ -11,19 +12,21 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0f1013; --surface: #17191d; --surface-2: #1f2227; --line: #2b2f36;
-    --ink: #eceef2; --ink-2: #b4bac6; --ink-3: #858c99;
-    --accent: #6d9cf0; --accent-ink: #0d1220; --accent-soft: #1d2a44;
-    --s-minha: #3987e5; --s-outros: #199e70;
+    --bg: #121012; --surface: #1b171a; --surface-2: #241e22; --line: #352c31;
+    --ink: #f0ecee; --ink-2: #c3b8bd; --ink-3: #94878d;
+    --accent: #e27a9c; --accent-2: #b46fa3; --accent-ink: #2a0a16; --accent-soft: #3b1b28;
+    --p1: #e27a9c; --p2: #c9566f; --p3: #b46fa3; --p4: #d39a86;
+    --s-minha: #cc5a85; --s-outros: #199e70;
     --ok: #4cc27a; --ok-soft: #143222; --warn: #f0b552; --warn-soft: #3a2b10; --bad: #f07a7a; --bad-soft: #3b1717;
     --nubank: #b16ef0; --itau: #ff9a3d; --shadow: none; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0f1013; --surface: #17191d; --surface-2: #1f2227; --line: #2b2f36;
-  --ink: #eceef2; --ink-2: #b4bac6; --ink-3: #858c99;
-  --accent: #6d9cf0; --accent-ink: #0d1220; --accent-soft: #1d2a44;
-  --s-minha: #3987e5; --s-outros: #199e70;
+  --bg: #121012; --surface: #1b171a; --surface-2: #241e22; --line: #352c31;
+  --ink: #f0ecee; --ink-2: #c3b8bd; --ink-3: #94878d;
+  --accent: #e27a9c; --accent-2: #b46fa3; --accent-ink: #2a0a16; --accent-soft: #3b1b28;
+  --p1: #e27a9c; --p2: #c9566f; --p3: #b46fa3; --p4: #d39a86;
+  --s-minha: #cc5a85; --s-outros: #199e70;
   --ok: #4cc27a; --ok-soft: #143222; --warn: #f0b552; --warn-soft: #3a2b10; --bad: #f07a7a; --bad-soft: #3b1717;
   --nubank: #b16ef0; --itau: #ff9a3d; --shadow: none; color-scheme: dark;
 }
@@ -141,7 +144,7 @@ main { padding: 16px 16px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)
   min-height: 40px;
 }
 .btn:hover { background: var(--surface-2); }
-.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.pri { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: var(--accent); color: var(--accent-ink); }
 .btn.pri:hover { filter: brightness(1.06); }
 .btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
 .btn.perigo { color: var(--bad); }
@@ -231,7 +234,7 @@ pre.msg { white-space: pre-wrap; word-break: break-word; background: var(--surfa
 
 /* ---------- telas de acesso ---------- */
 .acesso { max-width: 460px; margin: 0 auto; padding: calc(32px + env(safe-area-inset-top)) 16px 32px; }
-.acesso .logo { width: 52px; height: 52px; border-radius: 14px; background: var(--accent); display: grid; place-items: center; color: #fff; margin-bottom: 18px; }
+.acesso .logo { width: 52px; height: 52px; border-radius: 14px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); display: grid; place-items: center; color: #fff; margin-bottom: 18px; }
 .acesso .logo svg { width: 28px; height: 28px; }
 .acesso p { color: var(--ink-2); }
 .passos { padding-left: 18px; color: var(--ink-2); font-size: 14px; }
@@ -254,3 +257,13 @@ table.t tr.bad td.sobra { color: var(--bad); font-weight: 650; }
 @media (min-width: 700px) { .membros { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chips button { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); }
 .chips button svg { width: 14px; height: 14px; flex: none; }
+
+/* ---------- quem deve nos grupos ---------- */
+.card.devem { border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); background: linear-gradient(180deg, var(--accent-soft), var(--surface) 70px); }
+.card.devem .total { font-size: 24px; font-weight: 700; color: var(--accent); letter-spacing: -.01em; }
+.card.devem .lista .valor { font-size: 16px; }
+.card.devem .lista .valor small { margin-top: 4px; }
+.av { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--c); color: var(--accent-ink); font-weight: 700; font-size: 14px; align-self: flex-start; margin-top: 2px; }
+.barra.fina { height: 6px; max-width: 220px; }
+.chips-dev { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chips-dev .chip b { font-weight: 700; color: var(--ink); }

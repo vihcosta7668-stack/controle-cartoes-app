@@ -526,11 +526,50 @@ function vPessoas() {
 }
 
 // ======================= GRUPOS =======================
+// Quem ainda deve em um grupo: falta total, o que já dá para cobrar (até a fatura aberta) e se há parcela vencida.
+function devedoresGrupo(g) {
+  const cr = C.cronogramaGrupo(S.dados, g);
+  const ab = C.faturaAberta(cartao(g.cartao), S.hoje);
+  return Object.entries(cr).filter(([pid]) => pid !== EU).map(([pid, x]) => ({
+    pessoa: pid, devido: x.devido, pago: x.pago, falta: x.falta,
+    agora: round2(x.entradas.filter((e) => e.venc <= ab).reduce((s, e) => s + e.falta, 0)),
+    atrasado: x.entradas.some((e) => e.falta > 0 && e.venc < S.hoje),
+  }));
+}
+// Cor fixa por pessoa, alternando tons de vinho.
+const corPessoa = (pid) => `var(--p${(Math.max(0, S.dados.pessoas.findIndex((p) => p.id === pid)) % 4) + 1})`;
+function liDevedor(x, sub) {
+  const pct = x.devido ? Math.min(100, (x.pago / x.devido) * 100) : 0;
+  const cobrar = x.agora > 0 ? `<span class="tag ${x.atrasado ? 'bad' : 'warn'}">${x.atrasado ? 'atrasado' : 'cobrar agora'} ${brl(x.agora)}</span>` : '<span class="tag ok">em dia</span>';
+  return `<li><span class="av" style="--c:${corPessoa(x.pessoa)}">${esc(nome(x.pessoa).slice(0, 1).toUpperCase())}</span>
+    <div class="desc"><b>${esc(nome(x.pessoa))}</b>${sub ? `<small>${esc(sub)}</small>` : ''}
+      <div class="barra fina" style="margin-top:6px"><span style="width:${pct}%;background:${corPessoa(x.pessoa)}"></span></div>
+      <div class="tiny muted" style="margin-top:3px">pagou ${brl(x.pago)} de ${brl(x.devido)}</div></div>
+    <div class="valor">${brl(x.falta)}<small>${cobrar}</small></div></li>`;
+}
 function vGrupos() {
   const d = S.dados;
   if (S.grupoSel && C.grupoPorId(d, S.grupoSel)) return vGrupo(C.grupoPorId(d, S.grupoSel));
+  // soma por pessoa em todos os grupos
+  const porPessoa = {};
+  for (const g of d.grupos || []) {
+    for (const x of devedoresGrupo(g)) {
+      const t = (porPessoa[x.pessoa] ||= { pessoa: x.pessoa, devido: 0, pago: 0, falta: 0, agora: 0, atrasado: false, grupos: [] });
+      t.devido = round2(t.devido + x.devido); t.pago = round2(t.pago + x.pago); t.falta = round2(t.falta + x.falta); t.agora = round2(t.agora + x.agora);
+      t.atrasado ||= x.atrasado;
+      if (x.falta > 0.004) t.grupos.push(g.nome);
+    }
+  }
+  const devem = Object.values(porPessoa).filter((x) => x.falta > 0.004).sort((a, b) => b.falta - a.falta);
+  const totFalta = round2(devem.reduce((s, x) => s + x.falta, 0));
+  const totAgora = round2(devem.reduce((s, x) => s + x.agora, 0));
+  const resumo = (d.grupos || []).length ? `<section class="card devem">
+    <div class="card-h"><div><h2>Quem te deve nos grupos</h2>${totAgora > 0 ? `<div class="tiny muted" style="margin-top:3px">${brl(totAgora)} já dá para cobrar</div>` : ''}</div><div class="total num">${brl(totFalta)}</div></div>
+    ${devem.length ? `<ul class="lista">${devem.map((x) => liDevedor(x, x.grupos.join(' · '))).join('')}</ul>` : '<p class="small muted" style="margin:0">Ninguém te deve nada nos grupos.</p>'}
+  </section>` : '';
   return `<div class="row"><button class="btn pri" data-act="grupo-form">${icon('plus')} Nova compra em grupo</button></div>
   <p class="small muted" style="margin:0">Para viagens e compras rachadas: o valor é dividido pelo peso de cada pessoa (ex.: diárias) e cada um vê quanto paga por fatura.</p>
+  ${resumo}
   ${(d.grupos || []).map((g) => {
     const cr = C.cronogramaGrupo(d, g);
     const outros = Object.entries(cr).filter(([pid]) => pid !== EU);
@@ -548,6 +587,7 @@ function vGrupos() {
         <div><div class="tiny muted">Recebido dos outros</div><div class="num" style="font-weight:680">${brl(pago)} <span class="muted small">de ${brl(devido)}</span></div></div>
       </div>
       <div class="barra" style="margin-top:12px"><span class="p" style="width:${devido ? (pago / devido) * 100 : 0}%"></span></div>
+      ${(() => { const dv = devedoresGrupo(g).filter((x) => x.falta > 0.004).sort((a, b) => b.falta - a.falta); return dv.length ? `<div class="chips-dev">${dv.map((x) => `<span class="chip"><i style="background:${corPessoa(x.pessoa)}"></i>${esc(nome(x.pessoa))} <b class="num">${brl(x.falta)}</b></span>`).join('')}</div>` : ''; })()}
     </section>`;
   }).join('') || '<div class="card vazio">Nenhuma compra em grupo ainda.</div>'}`;
 }
@@ -577,6 +617,10 @@ function vGrupo(g) {
     </div>
     <p class="tiny muted" style="margin:10px 0 0">Na fatura, lançamentos com "${esc(g.descContem || '—')}" no ${esc(c.nome)} são ligados a este grupo automaticamente.</p>
   </section>
+  ${(() => { const dv = devedoresGrupo(g).sort((a, b) => b.falta - a.falta); return dv.length ? `<section class="card devem">
+    <div class="card-h"><h2>Quem te deve</h2><div class="total num">${brl(round2(dv.reduce((s, x) => s + x.falta, 0)))}</div></div>
+    <ul class="lista">${dv.map((x) => liDevedor(x, '')).join('')}</ul>
+  </section>` : ''; })()}
   <section class="card">
     <div class="card-h"><h2>Por pessoa</h2><span class="tiny muted">digite nos meses o que cada um pagou</span></div>
     <div class="tabela-wrap"><table class="t">
