@@ -184,6 +184,7 @@ label.campo > span { display: block; font-size: 13px; color: var(--ink-2); margi
 .lista .valor small { display: block; font-weight: 500; color: var(--ink-3); font-size: 12px; }
 .lista li.previsto .desc b, .lista li.previsto .valor { color: var(--ink-3); font-style: italic; }
 .lista li.pago .desc b { text-decoration: line-through; color: var(--ink-3); }
+.lista.fechamento .desc small { white-space: normal; }
 .sec-tit { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); font-weight: 650; margin: 14px 0 4px; }
 
 .barra { height: 10px; border-radius: 6px; background: var(--surface-2); overflow: hidden; display: flex; gap: 2px; }
