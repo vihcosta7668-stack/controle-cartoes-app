@@ -396,6 +396,20 @@ function vResumo() {
       ${p.atrasado > 0 ? '<span class="tag bad">atrasado</span>' : ''}<div class="valor">${brl(p.falta)}</div></li>`).join('') || '<li class="vazio">Ninguém te deve agora.</li>'}</ul>
   </section>`;
 }
+// Quanto da fatura os outros ainda vão cobrir e quanto sai de mim — para o "Falta pagar" fechar com o Me devem.
+function fechamentoHTML(r) {
+  if (r.outros < 0.005 || r.faltaPagar < 0.01) return '';
+  const f = C.fechamentoFatura(S.dados, r, S.hoje);
+  const bolso = f.doBolso >= 0
+    ? `<li><div class="desc"><b>Sai do seu bolso</b><small>sua parte ${brl(r.minha)} + já recebido dos outros ${brl(f.recebido)} − já pago ao banco ${brl(r.pago)}</small></div><div class="valor">${brl(f.doBolso)}</div></li>`
+    : `<li><div class="desc"><b>Você já adiantou</b><small>pagou ao banco ${brl(-f.doBolso)} além da sua parte e do que já recebeu; volta quando os outros pagarem</small></div><div class="valor">${brl(-f.doBolso)}</div></li>`;
+  return `<div class="sec-tit">Como fechar esta fatura</div>
+    <ul class="lista fechamento">
+      <li><div class="desc"><b>Falta pagar ao banco</b></div><div class="valor">${brl(r.faltaPagar)}</div></li>
+      <li class="click" data-act="nav" data-arg="pessoas"><div class="desc"><b>Ainda te devem nesta fatura</b><small>${f.pessoas.length ? esc(f.pessoas.map((p) => `${nome(p.pessoa)} ${brl(p.falta)}`).join(' · ')) : 'ninguém, todos já pagaram'}</small></div><div class="valor">${brl(f.pendente)}</div></li>
+      ${bolso}
+    </ul>`;
+}
 function conferenciaTag(r) {
   const v = r.meta?.valorInformado;
   if (r.meta?.totalDeclarado != null && Math.abs(r.meta.totalDeclarado - r.total) < 0.01) return '<span class="tag ok">confere com o PDF</span>';
@@ -446,6 +460,7 @@ function vFaturas() {
       <div><div class="tiny muted">Falta pagar</div><div class="num" style="font-size:20px;font-weight:680">${brl(r.faltaPagar)}</div></div>
     </div>
     <div style="margin:14px 0 8px">${barraMinha(r.minha, r.outros)}</div>${legenda(r.minha, r.outros)}
+    ${fechamentoHTML(r)}
     ${r.pago > (r.estado === 'fechada' ? r.total : r.totalGeral) + 0.009 ? `<div class="alerta info small" style="margin-top:12px">Pagamentos somam ${brl(r.pago - (r.estado === 'fechada' ? r.total : r.totalGeral))} a mais que os lançamentos desta fatura. Pode faltar algum lançamento ou um pagamento estar na fatura errada (veja abaixo).</div>` : ''}
     ${r.estado === 'fechada' && r.faltaPagar > 0.009 ? `<div class="alerta bad" style="margin-top:12px"><div class="grow small">Nenhum pagamento registrado cobre esta fatura.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${r.venc}">Já paguei</button></div>` : ''}
     <div class="row wrap" style="margin-top:14px;align-items:flex-end">

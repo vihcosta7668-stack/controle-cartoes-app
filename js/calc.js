@@ -153,6 +153,27 @@ export function resumoFatura(dados, cartaoId, venc, hoje) {
   };
 }
 
+// Como fechar a fatura: o que ainda me devem nela (por pessoa), o que já recebi dos outros
+// e quanto sai do meu bolso. Sempre fecha: faltaPagar = pendente + doBolso.
+export function fechamentoFatura(dados, r, hoje) {
+  const porPessoa = new Map();
+  const soma = (pid, v) => porPessoa.set(pid, round2((porPessoa.get(pid) || 0) + v));
+  for (const it of itensAReceber(dados, hoje)) {
+    if (it.cartao === r.cartao.id && it.venc === r.venc && !it.pago && it.falta > 0.004) soma(it.pessoa, it.falta);
+  }
+  // parcelas e fixos projetados ainda não são itens a receber, mas já contam em "Dos outros"
+  for (const l of r.previstas) {
+    if (l.origem !== 'projecao' || l.grupo) continue;
+    for (const p of partesOutros(dados, l)) if (p.pessoa !== EU) soma(p.pessoa, p.valor);
+  }
+  const pessoas = [...porPessoa].map(([pessoa, falta]) => ({ pessoa, falta })).sort((a, b) => b.falta - a.falta);
+  const pendente = round2(pessoas.reduce((s, p) => s + p.falta, 0));
+  const recebido = round2(r.outros - pendente);
+  const devido = r.estado === 'fechada' ? r.total : r.totalGeral;
+  const doBolso = round2(devido - r.pago - pendente);
+  return { pessoas, pendente, recebido, doBolso };
+}
+
 // Vencimentos que existem para um cartão (com lançamentos) + aberta + próximas
 export function vencimentosDoCartao(dados, cartaoId, hoje, futuras = 2) {
   const cartao = cartaoPorId(dados, cartaoId);
