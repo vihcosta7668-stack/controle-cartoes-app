@@ -123,7 +123,7 @@ export function parseItauPages(pages) {
     }
     const m = t.match(RE_LANC);
     if (!m) continue;
-    if (/^Total/i.test(m[2])) continue;
+    if (/^Total\s/i.test(m[2])) continue; // linhas de soma ("Total dos ..."), não compras como "TOTALPASS"
     const valor = round2(parseValor((m[3] ? '-' : '') + m[4]));
     const item = { ddmm: m[1], desc: m[2].trim(), valor };
     if (secao === 'pag') pagamentos.push(item);
@@ -246,7 +246,11 @@ export async function lerPaginasPDF(pdfjs, bytes) {
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const vp = page.getViewport({ scale: 1 });
-    const tc = await page.getTextContent();
+    // Lê o stream com getReader(): o getTextContent() do pdf.js usa `for await` em ReadableStream,
+    // que o Safari do iPhone não suporta ("undefined is not a function").
+    const reader = page.streamTextContent().getReader();
+    const tc = { items: [] };
+    for (let r = await reader.read(); !r.done; r = await reader.read()) tc.items.push(...r.value.items);
     pages.push({ width: vp.width, items: tc.items.filter((i) => typeof i.str === 'string').map((i) => ({ str: i.str, x: i.transform[4], y: i.transform[5] })) });
   }
   await task.destroy();
