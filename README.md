@@ -24,7 +24,7 @@ Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal. O
 - Nenhum dado financeiro, nome ou chave Pix está neste repositório.
 - O app recusa conectar a um repositório de dados público.
 - O token (fine-grained, só o repositório de dados, permissão *Contents: Read and write*) fica no aparelho cifrado com AES-GCM; a chave vem do seu PIN (PBKDF2, 310 mil iterações). Sem o PIN, o que está salvo no navegador não abre.
-- O app trava depois de 10 minutos em segundo plano.
+- O app trava depois de 10 minutos em segundo plano, a não ser que o aparelho esteja marcado como *Manter conectado* (opção na tela do PIN e em Ajustes). Nesse caso a chave derivada do PIN fica no IndexedDB do navegador como chave não exportável: o token continua cifrado, mas quem abrir o app nesse aparelho entra sem PIN. *Bloquear agora* desliga a opção e volta a pedir o PIN.
 - CSV e PDF são lidos no próprio aparelho (pdf.js incluído em `vendor/`, sem CDN). Da fatura do Itaú só são extraídos os lançamentos; CPF, endereço e código de barras são ignorados.
 - Política de segurança (CSP) só permite conexão com `api.github.com`; nenhum script de terceiros.
 - Se perder o aparelho: revogue o token em *GitHub → Settings → Developer settings → Personal access tokens* e gere outro.

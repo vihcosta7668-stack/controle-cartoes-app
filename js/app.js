@@ -24,12 +24,26 @@ const app = document.getElementById('app');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) S.ocultoEm = Date.now();
-  else if (S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; fecharModal(); telaPin(); }
+  else if (!S.lembrado && S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; fecharModal(); telaPin(); }
   else if (S.dados) { const h = hojeISO(); if (h !== S.hoje) { S.hoje = h; render(); } carregarComp(); }
 });
 window.addEventListener('online', () => { if (S.sync === 'pendente') salvarAgora(); if (S.comp.sync === 'pendente') salvarComp(); });
 
-if (!S.store.configurado) telaConfig(); else telaPin();
+const caixaManter = '<label class="check small"><input type="checkbox" name="manter" checked> Manter conectado neste aparelho (não pedir o PIN de novo)</label>';
+if (!S.store.configurado) telaConfig(); else abrirSemPin();
+
+// Aparelho marcado para manter conectado: abre direto; senão, pede o PIN.
+async function abrirSemPin() {
+  if (!(await S.store.desbloquearSalvo())) return telaPin();
+  S.lembrado = true;
+  if (S.comp.store.configurado) await S.comp.store.desbloquearSalvo();
+  await carregarDados();
+}
+async function manterConectado(sim) {
+  S.lembrado = sim;
+  if (sim) { await S.store.lembrar(); if (S.comp.store.desbloqueado) await S.comp.store.lembrar(); }
+  else { await S.store.esquecer(); await S.comp.store.esquecer(); }
+}
 
 // Cartões que o app sabe ler. Fechamento/vencimento são o ponto de partida; cada um ajusta em Ajustes.
 const CARTOES_MODELO = {
@@ -84,6 +98,7 @@ function telaConfig(erro = '') {
         </div>
       </details>
       ${erro ? `<div class="erro-txt">${esc(erro)}</div>` : ''}
+      ${caixaManter}
       <button class="btn pri" type="submit">Conectar</button>
     </form>
   </div>`;
@@ -97,6 +112,7 @@ function telaConfig(erro = '') {
       try { await configurarComp({ owner: f.comp_owner, repo: f.comp_repo, token: f.comp_token, nome: f.comp_nome, pin: f.pin }); }
       catch (err) { S.store.sair(); S.comp.store.sair(); return telaConfig(`Casa e viagens: ${err.message}`); }
     }
+    await manterConectado(f.manter === 'on');
     await carregarDados();
   });
 }
@@ -110,6 +126,7 @@ function telaPin(erro = '') {
     <form class="form card" id="f-pin" autocomplete="off">
       <label class="campo"><span>PIN</span><input class="inp" name="pin" type="password" inputmode="numeric" autofocus required></label>
       ${erro ? `<div class="erro-txt">${esc(erro)}</div>` : ''}
+      ${caixaManter}
       <button class="btn pri" type="submit">Abrir</button>
     </form>
     <button class="btn ghost small" id="b-esqueci">Esqueci o PIN (desconectar este aparelho)</button>
@@ -121,6 +138,7 @@ function telaPin(erro = '') {
     const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Abrindo…';
     try { await S.store.desbloquear(f.pin.value); } catch (err) { return telaPin(err.message); }
     if (S.comp.store.configurado) { try { await S.comp.store.desbloquear(f.pin.value); } catch { toast('Casa e viagens: o PIN deste aparelho não abriu o acesso compartilhado. Reconecte em Ajustes.', 5000); } }
+    await manterConectado(f.manter.checked);
     await carregarDados();
   });
   document.getElementById('b-esqueci').addEventListener('click', () => {
@@ -941,9 +959,10 @@ function vAjustes() {
       <button class="btn" data-act="recarregar">${icon('refresh')} Recarregar do GitHub</button>
       <button class="btn" data-act="backup">Baixar cópia (.json)</button>
       <button class="btn" data-act="bloquear">${icon('lock')} Bloquear agora</button>
+      ${S.lembrado ? '<button class="btn" data-act="manter-nao">Pedir o PIN ao abrir</button>' : '<button class="btn" data-act="manter-sim">Manter conectado neste aparelho</button>'}
       <button class="btn perigo" data-act="sair">Desconectar este aparelho</button>
     </div>
-    <p class="tiny muted" style="margin:0">PDFs e CSVs são lidos aqui no aparelho; só os lançamentos vão para o GitHub (CPF, endereço e código de barras da fatura são ignorados). O app trava sozinho depois de 10 minutos em segundo plano.</p>
+    <p class="tiny muted" style="margin:0">PDFs e CSVs são lidos aqui no aparelho; só os lançamentos vão para o GitHub (CPF, endereço e código de barras da fatura são ignorados). ${S.lembrado ? 'Este aparelho está mantido conectado: abre sem PIN e não trava sozinho. "Bloquear agora" volta a pedir o PIN.' : 'O app trava sozinho depois de 10 minutos em segundo plano.'}</p>
   </section>`;
 }
 
@@ -1806,7 +1825,9 @@ const ACOES = {
   'comp-manter-local': async () => { fecharModal(); try { await S.comp.store.carregar(); } catch { /* segue */ } S.comp.msg = 'app: mantidos os dados deste aparelho'; await salvarComp(); },
   'cartao-add': (a) => { if (!CARTOES_MODELO[a]) return; mutar((dd) => { if (!dd.cartoes.some((c) => c.id === a)) dd.cartoes.push(structuredClone(CARTOES_MODELO[a])); }, 'app: cartão adicionado'); },
   'cartao-remover': (a) => { if (confirm('Remover este cartão?')) mutar((dd) => { dd.cartoes = dd.cartoes.filter((c) => c.id !== a); }, 'app: cartão removido'); },
-  bloquear: () => { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; telaPin(); },
+  'manter-sim': async () => { await manterConectado(true); S.manterScroll = true; render(); toast('Este aparelho vai abrir sem pedir o PIN.'); },
+  'manter-nao': async () => { await manterConectado(false); S.manterScroll = true; render(); toast('O PIN volta a ser pedido ao abrir.'); },
+  bloquear: async () => { await manterConectado(false); S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; telaPin(); },
   sair: () => { if (confirm('Desconectar este aparelho? Você vai precisar do token de novo. Os dados no GitHub continuam lá.')) { S.store.sair(); S.comp.store.sair(); S.comp.dados = null; S.dados = null; telaConfig(); } },
 };
 document.addEventListener('click', (e) => {
@@ -1899,6 +1920,7 @@ app.addEventListener('submit', async (e) => {
     await new Store().desbloquear(f.pin); // mesmo PIN que abre o app neste aparelho
     await configurarComp({ owner: f.owner, repo: f.repo, token: f.token, nome: f.nome, pin: f.pin });
   } catch (err) { S.comp.store.sair(); btn.disabled = false; btn.textContent = 'Conectar'; return toast(err.message, 4500); }
+  if (S.lembrado) await S.comp.store.lembrar();
   toast('Conectado. Buscando casa e viagens…');
   S.comp.dados = null; S.comp.erro = ''; render();
   await carregarComp({ forcar: true });

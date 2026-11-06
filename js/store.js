@@ -32,6 +32,23 @@ async function decifrar(key, blob) {
   return dec.decode(pt);
 }
 
+// "Manter conectado": guarda no IndexedDB a chave AES já derivada do PIN, como CryptoKey NÃO exportável.
+// O token continua cifrado no localStorage; o script do app consegue usar a chave, mas ninguém consegue
+// copiar os bytes dela para fora do navegador. Quem abrir o app neste aparelho entra sem PIN.
+const IDB = 'cc_chaves';
+function idb(modo, fn) {
+  return new Promise((ok, erro) => {
+    const req = indexedDB.open(IDB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('k');
+    req.onerror = () => erro(req.error);
+    req.onsuccess = () => {
+      const db = req.result; const tx = db.transaction('k', modo); const r = fn(tx.objectStore('k'));
+      tx.oncomplete = () => { db.close(); ok(r?.result); };
+      tx.onerror = () => { db.close(); erro(tx.error); };
+    };
+  });
+}
+
 export class ErroConflito extends Error {}
 
 // Chaves do armazenamento local. O repositório compartilhado (casa e viagens) usa outro trio.
@@ -78,7 +95,20 @@ export class Store {
 
   bloquear() { this.token = null; this.key = null; }
 
-  sair() { this.bloquear(); Object.values(this.K).forEach((k) => localStorage.removeItem(k)); this.cfg = null; this.sha = null; }
+  async lembrar() { if (this.key) await idb('readwrite', (st) => st.put(this.key, this.K.tok)); }
+  async esquecer() { try { await idb('readwrite', (st) => st.delete(this.K.tok)); } catch { /* sem IndexedDB */ } }
+  // Abre sem PIN, se este aparelho foi marcado para manter conectado. Retorna true se abriu.
+  async desbloquearSalvo() {
+    const t = lsGet(this.K.tok); if (!t) return false;
+    let key;
+    try { key = await idb('readonly', (st) => st.get(this.K.tok)); } catch { return false; }
+    if (!key) return false;
+    try { this.token = await decifrar(key, t); } catch { await this.esquecer(); return false; }
+    this.key = key;
+    return true;
+  }
+
+  sair() { this.bloquear(); this.esquecer(); Object.values(this.K).forEach((k) => localStorage.removeItem(k)); this.cfg = null; this.sha = null; }
 
   atualizarCfg(campos) { this.cfg = { ...this.cfg, ...campos }; lsSet(this.K.cfg, this.cfg); }
 
