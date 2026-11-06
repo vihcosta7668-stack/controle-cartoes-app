@@ -144,4 +144,11 @@ export function importarFatura(dadosIn, imp) {
   return { dados, resumo };
 }
 
+// Lançamento novo feito à mão ou colado: aplica as mesmas regras da importação
+// (parcela anterior da mesma compra, regras/grupos e gasto fixo do mês anterior).
+export function classificarNovo(dados, l) {
+  const antigas = dados.lancamentos.filter((x) => x.cartao === l.cartao && x.venc < l.venc && x.origem !== 'previsto');
+  return herdar(dados, l, antigas) || aplicarRegras(dados, l) || herdarFixo(l, antigas);
+}
+
 export { vencSeguinte, addMeses };

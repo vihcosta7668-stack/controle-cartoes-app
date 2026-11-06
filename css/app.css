@@ -268,3 +268,29 @@ table.t tr.bad td.sobra { color: var(--bad); font-weight: 650; }
 .barra.fina { height: 6px; max-width: 220px; }
 .chips-dev { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .chips-dev .chip b { font-weight: 700; color: var(--ink); }
+
+/* ---------- leitura rápida ---------- */
+.frase { margin: -4px 0 14px; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+.frase b { color: var(--ink); font-variant-numeric: tabular-nums; }
+details.conferir { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.conferir > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 550; }
+details.conferir > summary .tag { margin-left: 6px; }
+.lista > li .seta { flex: none; display: inline-flex; color: var(--ink-3); }
+.lista > li .seta svg { width: 16px; height: 16px; }
+.form .lado.tres { grid-template-columns: 1.4fr .7fr 1.2fr; }
+
+/* ---------- salário x faturas ---------- */
+.periodos { display: grid; gap: 10px; }
+@media (min-width: 700px) { .periodos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.periodo { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px; background: var(--surface-2); min-width: 0; }
+.periodo.atual { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.periodo .entra { font-weight: 680; color: var(--ok); white-space: nowrap; }
+.periodo .lista { margin-top: 6px; }
+.periodo .lista > li { padding: 8px 2px; }
+.periodo .resultado { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 2px; font-size: 14px; }
+.periodo .resultado b { font-size: 18px; }
+.periodo.ok .resultado b { color: var(--ok); }
+.periodo.warn .resultado b { color: var(--warn); }
+.periodo.bad .resultado b, .periodo .aviso { color: var(--bad); }
+.periodo .tiny { margin-top: 4px; }
+.periodo .lista .desc small { white-space: normal; }

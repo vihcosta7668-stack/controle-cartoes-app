@@ -1,7 +1,7 @@
 // Casa e viagens: regras puras sobre o arquivo compartilhado (compartilhado.json)
 // e a checagem "cabe no meu bolso?", que cruza esse arquivo com os dados pessoais de quem está usando.
-import { round2, addMeses, difMeses, slug, uid, normDesc } from './util.js';
-import { previsaoMeses, vencDaCompra, cartaoPorId, faturaAberta, resumoFatura, previstasPara, minhaParte } from './calc.js';
+import { round2, addMeses, addDias, difMeses, slug, uid, normDesc, partes, ymd, diasNoMes } from './util.js';
+import { previsaoMeses, vencDaCompra, cartaoPorId, faturaAberta, resumoFatura, previstasPara, minhaParte, vencSeguinte, fechamentoFatura } from './calc.js';
 
 export const ETAPAS_PADRAO = [
   'Lote', 'Projeto, documentação e taxas', 'Fundação (radier)', 'Estrutura metálica', 'Alvenaria',
@@ -115,7 +115,7 @@ export function saidasDoItem(comp, item, eu, dadosPessoais, hoje) {
  */
 export function viabilidade(comp, eu, dadosPessoais, hoje, { meses: minMeses = 6, extra = null, semItem = null } = {}) {
   const orc = dadosPessoais.orcamento;
-  if (!orc || !(Number(orc.renda) > 0)) return { semRenda: true };
+  if (!orc || !(rendaMensal(orc) > 0)) return { semRenda: true };
   const itens = [];
   for (const v of comp.viagens) for (const i of v.itens) if (i.id !== semItem) itens.push({ v, i });
   if (extra) itens.push({ v: extra.viagem, i: extra.item });
@@ -133,7 +133,7 @@ export function viabilidade(comp, eu, dadosPessoais, hoje, { meses: minMeses = 6
   const faturas = new Map(dadosPessoais.cartoes.length ? previsaoMeses(dadosPessoais, hoje, n + 1).map((m) => [m.mes, m]) : []);
   // Mês atual: a previsão só olha faturas abertas; as que já fecharam e vencem neste mês também saem do salário dele.
   const fechadasMes = faturasFechadasDoMes(dadosPessoais, hoje);
-  const renda = round2(Number(orc.renda));
+  const renda = rendaMensal(orc);
   const contas = round2(Number(orc.compromissos || 0));
   const casa = round2(Number(orc.guardarCasa || 0));
   const margem = round2(renda * Math.max(0, Number(orc.margem ?? 0.1)));
@@ -190,4 +190,71 @@ export function pessoaParaMembro(dadosPessoais, membro) {
   if (achada) return { id: achada.id, nova: null };
   const id = dadosPessoais.pessoas.some((p) => p.id === membro.id) ? uid('p') : membro.id;
   return { id, nova: { id, nome: membro.nome, telefone: '' } };
+}
+
+// ======================= SALÁRIO x FATURAS =======================
+// orcamento.salario = { adiant: { valor, dia, util }, saldo: { valor, dia, util }, contasNo: 'saldo' | 'adiant' | 'dividir' }
+// valor = o que cai na conta (já sem INSS, refeição, plano e demais descontos do holerite).
+// dia = dia do mês; util = true quando é o "N-ésimo dia útil".
+export const PAGAMENTOS = [['adiant', 'Adiantamento'], ['saldo', 'Salário']];
+const pagOk = (p) => p && Number(p.valor) > 0 && Number(p.dia) >= 1;
+export const salarioConfigurado = (orc) => !!orc?.salario && PAGAMENTOS.every(([k]) => pagOk(orc.salario[k]));
+// Com os dois pagamentos preenchidos, a renda do mês é a soma deles.
+export function rendaMensal(orc) {
+  if (salarioConfigurado(orc)) return round2(Number(orc.salario.adiant.valor) + Number(orc.salario.saldo.valor));
+  return round2(Number(orc?.renda || 0));
+}
+const fimDeSemana = (iso) => { const { y, m, d } = partes(iso); const w = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); return w === 0 || w === 6; };
+// Data do pagamento num mês. Dia fixo que cai no sábado/domingo vai para a sexta anterior (feriados não são considerados).
+export function dataPagamento(p, y, m) {
+  const dia = Math.max(1, Math.min(31, Math.round(Number(p.dia))));
+  if (p.util) {
+    let d = ymd(y, m, 1); let n = 0;
+    for (let i = 0; i < 31; i++, d = addDias(d, 1)) { if (!fimDeSemana(d) && ++n === dia) return d; }
+    return d;
+  }
+  let d = ymd(y, m, Math.min(dia, diasNoMes(y, m)));
+  while (fimDeSemana(d)) d = addDias(d, -1);
+  return d;
+}
+
+// Períodos entre um pagamento e o seguinte, começando pelo que está em curso hoje.
+// Em cada período: o que entra, as contas fixas e casa (no pagamento escolhido) e as faturas que vencem nele.
+export function periodosSalario(dados, hoje, n = 4) {
+  const orc = dados.orcamento;
+  if (!salarioConfigurado(orc)) return null;
+  const sal = orc.salario;
+  const datas = [];
+  for (let k = -2; k <= Math.ceil(n / 2) + 2; k++) {
+    const { y, m } = partes(addMeses(hoje.slice(0, 7) + '-01', k));
+    for (const [tipo, nomeP] of PAGAMENTOS) datas.push({ tipo, nome: nomeP, data: dataPagamento(sal[tipo], y, m), valor: round2(Number(sal[tipo].valor)) });
+  }
+  datas.sort((a, b) => a.data.localeCompare(b.data));
+  let i0 = datas.findIndex((x) => x.data > hoje) - 1;
+  if (i0 < 0) i0 = 0;
+  const contasMes = round2(Number(orc.compromissos || 0) + Number(orc.guardarCasa || 0));
+  const margemPct = Math.max(0, Number(orc.margem ?? 0.1));
+  const out = [];
+  for (let i = i0; i < i0 + n && i + 1 < datas.length; i++) {
+    const pag = datas[i]; const fim = datas[i + 1].data; // período = [pag.data, fim)
+    const contas = sal.contasNo === 'dividir' ? round2(contasMes / 2) : ((sal.contasNo || 'saldo') === pag.tipo ? contasMes : 0);
+    const faturas = [];
+    for (const c of dados.cartoes) {
+      let v = vencSeguinte(c, addMeses(pag.data.slice(0, 7) + '-01', -1, c.vencimento), 0);
+      for (let g = 0; g < 3; g++, v = vencSeguinte(c, v)) {
+        if (v < pag.data || v >= fim) continue;
+        const r = resumoFatura(dados, c.id, v, hoje);
+        const f = r.outros > 0.004 && r.faltaPagar > 0.009 ? fechamentoFatura(dados, r, hoje) : null;
+        faturas.push({ cartao: c, venc: v, estado: r.estado, total: r.estado === 'fechada' ? r.total : r.totalGeral, minha: r.minha, pago: r.pago, faltaPagar: r.faltaPagar, pendente: f ? f.pendente : 0 });
+      }
+    }
+    faturas.sort((a, b) => a.venc.localeCompare(b.venc));
+    const minha = round2(faturas.reduce((s, f) => s + f.minha, 0));
+    const pendente = round2(faturas.reduce((s, f) => s + f.pendente, 0));
+    const sobra = round2(pag.valor - contas - minha);
+    const margem = round2(pag.valor * margemPct);
+    const estado = sobra < 0 ? 'bad' : (sobra < margem || sobra - pendente < 0 ? 'warn' : 'ok');
+    out.push({ ...pag, ate: addDias(fim, -1), atual: pag.data <= hoje, contas, faturas, minha, pendente, sobra, margem, estado });
+  }
+  return out;
 }

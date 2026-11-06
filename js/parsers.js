@@ -256,3 +256,64 @@ export async function lerPaginasPDF(pdfjs, bytes) {
   await task.destroy();
   return pages;
 }
+
+// ---------------- Texto colado (fatura ainda aberta) ----------------
+// Para quando o banco ainda não deixa baixar o arquivo: o texto copiado da tela de lançamentos
+// (internet banking ou app) ou digitado, uma compra por linha. Aceita a data, a descrição e o valor
+// na mesma linha ("05/11 UBER TRIP 23,90") ou em linhas separadas, como sai ao copiar de muitas telas.
+const MESES_TXT = { jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6, jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12 };
+const RE_DATA = /^(\d{1,2})\s*[/.-]\s*(\d{1,2})(?:\s*[/.-]\s*(\d{2,4}))?(?!\d)|^(\d{1,2})\s*(?:de\s+)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-zç.]*(?:\s*(?:de\s+)?(\d{4}))?/i;
+// valor no fim da linha: com centavos ("23,90", "12,5", "1.234,56") ou inteiro precedido de R$ ("R$ 30")
+const RE_VALOR = /(-|−)?\s*(?:R\$\s*)?(-|−)?\s*((?:\d{1,3}(?:\.\d{3})+|\d+),\d{1,2})\s*(-|−)?\s*$|(-|−)?\s*R\$\s*(-|−)?\s*(\d{1,3}(?:\.\d{3})*|\d+)\s*$/;
+const CABECALHO = /^(data|lan[cç]amentos?|descri[cç][aã]o|estabelecimento|valor( em r\$)?|total|subtotal|fatura|compras|cart[aã]o|titular|adicional)\b/i;
+
+function dataDoTexto(m, hoje) {
+  const dia = Number(m[1] || m[4]);
+  const mes = m[2] ? Number(m[2]) : MESES_TXT[String(m[5]).slice(0, 3).toLowerCase()];
+  let ano = m[3] || m[6];
+  if (!mes || mes > 12 || dia < 1 || dia > 31) return null;
+  if (ano) ano = Number(ano.length === 2 ? '20' + ano : ano);
+  else { // sem ano: a ocorrência mais recente que não passa de hoje (+3 dias de folga)
+    const { y } = partes(hoje);
+    ano = y;
+    if (difDias(hoje, ymd(y, mes, Math.min(dia, 28))) > 3) ano = y - 1;
+  }
+  return ymd(ano, mes, dia);
+}
+
+export function parseTextoLancamentos(texto, hoje) {
+  const linhas = String(texto || '').replace(/ /g, ' ').split(/\r?\n/).map((l) => l.replace(/\t+/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const out = []; const ignoradas = [];
+  let atual = null; // { data, desc: [] }
+  const fechar = (valorTxt, negativo) => {
+    const desc = atual.desc.join(' ').replace(/\s+/g, ' ').trim();
+    const v = round2(parseValor(valorTxt) * (negativo ? -1 : 1));
+    if (!desc || !Number.isFinite(v) || v === 0) { ignoradas.push([atual.data, desc, valorTxt].filter(Boolean).join(' ')); atual = null; return; }
+    out.push({ data: atual.data, desc, valor: v, tipo: tipoPorValor(desc, v), parcela: detectaParcela(desc) });
+    atual = { data: atual.data, desc: [] }; // próximas linhas sem data herdam a mesma data (telas que agrupam por dia)
+    atual.semValor = true;
+  };
+  for (const bruta of linhas) {
+    let l = bruta;
+    if (CABECALHO.test(l) && !RE_VALOR.test(l)) continue;
+    const md = l.match(RE_DATA);
+    if (md) {
+      const data = dataDoTexto(md, hoje);
+      if (data) {
+        if (atual && atual.desc.length && !atual.semValor) ignoradas.push(`${atual.data} ${atual.desc.join(' ')}`);
+        atual = { data, desc: [] };
+        l = l.slice(md[0].length).trim();
+      }
+    }
+    if (!atual) { ignoradas.push(bruta); continue; }
+    const mv = l.match(RE_VALOR);
+    if (mv) {
+      const resto = l.slice(0, mv.index).replace(/R\$\s*$/i, '').trim();
+      if (resto) atual.desc.push(resto);
+      atual.semValor = false;
+      fechar(mv[3] || mv[7], !!(mv[1] || mv[2] || mv[4] || mv[5] || mv[6]));
+    } else if (l) { atual.desc.push(l); atual.semValor = false; }
+  }
+  if (atual && atual.desc.length && !atual.semValor) ignoradas.push(`${atual.data} ${atual.desc.join(' ')}`);
+  return { linhas: out, ignoradas };
+}

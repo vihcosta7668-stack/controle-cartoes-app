@@ -46,12 +46,17 @@ Para cada mês: renda − contas fixas fora do cartão − o que você separa pa
 
 Ao marcar um gasto de viagem como comprado no cartão, o app lança a 1ª parcela na sua fatura (com a parte do outro em "Me devem"). Quando a fatura do banco for importada, esse lançamento é trocado pelo do banco se o valor bater e a data tiver até 3 dias de diferença; se não bater, a importação avisa e você apaga o duplicado.
 
+## Salário x faturas
+
+Em *Ajustes → Renda e compromissos* ficam os dois pagamentos do mês (adiantamento e salário): o valor que cai na conta, já sem os descontos do holerite, e o dia (dia do mês ou N-ésimo dia útil; dia fixo no fim de semana conta na sexta anterior, feriados não). No Resumo, cada pagamento aparece com as faturas que vencem até o pagamento seguinte, a sua parte de cada uma, as contas fixas e a casa (no pagamento escolhido) e quanto sobra. Se ainda te devem nessas faturas, mostra quanto você precisa adiantar caso não paguem antes do vencimento. Com os dois pagamentos preenchidos, a renda do mês passa a ser a soma deles (também na checagem "cabe no bolso").
+
 ## Como as faturas entram
 
 - **Nubank**: exporte a fatura em CSV (`Nubank_AAAA-MM-DD.csv`; a data do nome é o vencimento) e importe. Pode reimportar quantas vezes quiser no mês: o que você marcou é mantido.
 - **Pagamentos no CSV do Nubank**: pagamento feito até o vencimento da fatura anterior conta para a anterior; depois disso, é antecipação da atual. Na importação dá para trocar e informar o valor que aparece no app do banco — o app mostra a diferença e, se existir, a combinação de pagamentos que fecha o valor.
 - **Itaú**: importe o PDF da fatura fechada. O app confere a soma com o total do PDF e cria as parcelas da próxima fatura como "previstas". Compras do dia a dia você lança à mão; quando o PDF seguinte chegar, as lançadas à mão que baterem (mesmo valor, até 3 dias de diferença) são substituídas pelas do PDF mantendo a divisão.
 - **Mercado Pago**: importe o PDF da fatura. O app confere a soma com consumos + encargos do resumo. Pagamentos da fatura anterior entram como pagamento; o número do cartão e o nome do titular são ignorados. O PDF do Mercado Pago não lista as parcelas da próxima fatura uma a uma; elas são projetadas a partir de "Parcela n de m".
+- **Fatura ainda aberta (antes de o banco liberar o PDF/CSV)**: em Faturas → *Colar lançamentos*, cole o texto copiado da tela de lançamentos do banco ou digite uma compra por linha (`05/11 Uber 23,90`). O app mostra o que leu antes de lançar, deixa desmarcado o que já está no app (mesmo valor, até 3 dias) e as parcelas que já são previstas, e ignora pagamentos. Os colados entram como "lançado à mão", com as regras automáticas, e são trocados pelos do banco quando a fatura fechada for importada.
 - Parcela seguinte de uma compra herda automaticamente a pessoa/divisão da anterior. Regras (Ajustes) cobrem compras recorrentes.
 
 ## Arquivos

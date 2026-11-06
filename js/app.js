@@ -4,9 +4,9 @@ import {
   detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
 } from './util.js';
 import * as C from './calc.js';
-import { parseNubankCSV, parsePDFFatura, lerPaginasPDF } from './parsers.js';
+import { parseNubankCSV, parsePDFFatura, lerPaginasPDF, parseTextoLancamentos } from './parsers.js';
 import * as PL from './planos.js';
-import { importarFatura } from './importer.js';
+import { importarFatura, classificarNovo } from './importer.js';
 import { esc, icon, toast, abrirModal, fecharModal, cabecalhoModal, chipCartao, graficoBarras, ligarGraficos } from './ui.js';
 
 const EU = C.EU;
@@ -365,6 +365,7 @@ function vResumo() {
   const atrasado = pessoas.reduce((s, p) => s + p.atrasado, 0);
   const meses = C.previsaoMeses(d, S.hoje, 6);
   return `
+  ${salarioHTML()}
   ${cobr.length ? `<div class="alerta warn"><div class="grow"><b>${cobr.length} cobrança${cobr.length > 1 ? 's' : ''} para fazer</b><br><span class="small">${esc(cobr.map((c) => nome(c.pessoa)).slice(0, 5).join(', '))}${cobr.length > 5 ? '…' : ''}</span></div><button class="btn sm" data-act="nav" data-arg="pessoas">Ver</button></div>` : ''}
   <div class="grid g4">
     <div class="card kpi"><div class="rot">Faturas abertas</div><div class="val">${brl(tot)}</div><div class="sub">${res.map((x) => `${esc(x.c.nome)} ${brl(x.r.totalGeral)}`).join(' · ')}</div></div>
@@ -381,7 +382,7 @@ function vResumo() {
         ${conferenciaTag(r)}</div>
       <div style="margin:12px 0 8px">${barraMinha(r.minha, r.outros)}</div>${legenda(r.minha, r.outros)}
       ${abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">Fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`).join('')}
-      <div class="row wrap" style="margin-top:14px"><button class="btn sm" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">Ver fatura</button><button class="btn sm" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar</button><button class="btn sm" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar</button></div>
+      <div class="row wrap" style="margin-top:14px"><button class="btn sm" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">Ver fatura</button><button class="btn sm" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar</button><button class="btn sm" data-act="colar" data-arg="${c.id}">${icon('copy')} Colar</button><button class="btn sm" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar</button></div>
     </section>`).join('')}
   </div>
   <section class="card">
@@ -394,6 +395,28 @@ function vResumo() {
     <ul class="lista">${pessoas.filter((p) => p.falta > 0).slice(0, 6).map((p) => `
       <li class="click" data-act="abrir-pessoa" data-arg="${p.pessoa.id}"><div class="desc"><b>${esc(p.pessoa.nome)}</b><small>${p.futuro > 0 ? `+ ${brl(p.futuro)} em parcelas futuras` : 'sem parcelas futuras'}</small></div>
       ${p.atrasado > 0 ? '<span class="tag bad">atrasado</span>' : ''}<div class="valor">${brl(p.falta)}</div></li>`).join('') || '<li class="vazio">Ninguém te deve agora.</li>'}</ul>
+  </section>`;
+}
+// Salário x faturas: cada pagamento (adiantamento e salário) e as faturas que vencem até o próximo.
+function salarioHTML() {
+  const per = PL.periodosSalario(S.dados, S.hoje, 4);
+  if (!per) {
+    return `<div class="alerta info"><div class="grow small">Informe em Ajustes quanto cai na conta no adiantamento e no salário (e em que dia). Aqui vai aparecer, para cada pagamento, quais faturas ele precisa cobrir e quanto sobra.</div><button class="btn sm" data-act="nav" data-arg="ajustes">Ajustes</button></div>`;
+  }
+  const rot = { ok: 'sobra', warn: 'sobra pouco', bad: 'falta' };
+  return `<section class="card">
+    <div class="card-h"><h2>Salário x faturas</h2><span class="tiny muted">sua parte de cada fatura sai do pagamento anterior ao vencimento</span></div>
+    <div class="periodos">${per.map((p) => `<div class="periodo ${p.estado}${p.atual ? ' atual' : ''}">
+      <div class="spread"><div><b>${esc(p.nome)} · ${diaMes(p.data)}</b><div class="tiny muted">${p.atual ? 'em curso · ' : ''}cobre até ${diaMes(p.ate)}</div></div><div class="num entra">+ ${brl(p.valor)}</div></div>
+      <ul class="lista">
+        ${p.faturas.map((f) => `<li class="click" data-act="ver-fatura" data-arg="${f.cartao.id}|${f.venc}"><div class="desc"><b>${esc(f.cartao.nome)} vence ${diaMes(f.venc)}</b><small>fatura ${brl(f.total)}${f.estado === 'aberta' ? ' até agora' : f.estado === 'futura' ? ' prevista' : ''}${f.pago > 0.009 ? ` · já pago ${brl(f.pago)}` : ''}${f.pendente > 0.009 ? ` · te devem ${brl(f.pendente)}` : ''}</small></div><div class="valor">− ${brl(f.minha)}<small>sua parte</small></div></li>`).join('')}
+        ${p.contas > 0 ? `<li><div class="desc"><b>Contas fixas e casa</b></div><div class="valor">− ${brl(p.contas)}</div></li>` : ''}
+        ${!p.faturas.length && !p.contas ? '<li class="vazio" style="padding:8px">Nenhuma fatura vence neste período.</li>' : ''}
+      </ul>
+      <div class="spread resultado"><span>${rot[p.estado][0].toUpperCase() + rot[p.estado].slice(1)}</span><b class="num">${brl(Math.abs(p.sobra))}</b></div>
+      ${p.pendente > 0.009 && p.sobra >= 0 ? `<div class="tiny ${p.sobra - p.pendente < 0 ? 'aviso' : 'muted'}">Se ninguém te pagar antes do vencimento, você adianta ${brl(p.pendente)} e ${p.sobra - p.pendente < 0 ? `fica ${brl(p.pendente - p.sobra)} no vermelho` : `ainda sobram ${brl(p.sobra - p.pendente)}`}.</div>` : ''}
+    </div>`).join('')}</div>
+    <p class="tiny muted" style="margin:10px 0 0">Fatura aberta entra com o que já foi lançado até hoje; compras novas só contam depois de importadas ou coladas. Pagamento em dia fixo que cai no fim de semana conta na sexta anterior (feriados não).</p>
   </section>`;
 }
 // Quanto da fatura os outros ainda vão cobrir e quanto sai de mim — para o "Falta pagar" fechar com o Me devem.
@@ -409,6 +432,17 @@ function fechamentoHTML(r) {
       <li class="click" data-act="nav" data-arg="pessoas"><div class="desc"><b>Ainda te devem nesta fatura</b><small>${f.pessoas.length ? esc(f.pessoas.map((p) => `${nome(p.pessoa)} ${brl(p.falta)}`).join(' · ')) : 'ninguém, todos já pagaram'}</small></div><div class="valor">${brl(f.pendente)}</div></li>
       ${bolso}
     </ul>`;
+}
+// Uma frase com o que importa da fatura, antes dos números.
+function fraseFatura(r) {
+  const banco = esc(r.cartao.nome);
+  const outros = r.outros > 0.004 ? ` Desse total, <b>${brl(r.minha)}</b> é seu e <b>${brl(r.outros)}</b> é dos outros.` : ' É tudo seu.';
+  if (r.estado === 'fechada') {
+    return r.faltaPagar > 0.009 ? `Falta pagar <b>${brl(r.faltaPagar)}</b> ao ${banco} (${quando(r.venc)}).${outros}` : `Fatura paga.${outros}`;
+  }
+  const prev = r.totalPrevisto > 0 ? ` (${brl(r.total)} já lançado + ${brl(r.totalPrevisto)} de parcelas e fixos previstos)` : '';
+  if (r.estado === 'aberta') return `Até agora a fatura está em <b>${brl(r.totalGeral)}</b>${prev}. Fecha em ${diaMes(r.fechamento)} e vence em ${diaMes(r.venc)}.${outros}`;
+  return `Já estão previstos <b>${brl(r.totalGeral)}</b> para esta fatura${prev}.${outros}`;
 }
 function conferenciaTag(r) {
   const v = r.meta?.valorInformado;
@@ -450,9 +484,10 @@ function vFaturas() {
       ${vencs.map((v) => `<option value="${v}" ${v === r.venc ? 'selected' : ''}>Vence ${dataBR(v)}${v === C.faturaAberta(c, S.hoje) ? ' (aberta)' : ''}</option>`).join('')}
     </select>
   </div>
-  <div class="row wrap"><button class="btn pri" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar ${formatoFatura(c)}</button><button class="btn" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar compra</button></div>
+  <div class="row wrap"><button class="btn pri" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar ${formatoFatura(c)}</button><button class="btn" data-act="colar" data-arg="${c.id}">${icon('copy')} Colar lançamentos</button><button class="btn" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar compra</button></div>
   <section class="card">
     <div class="card-h">${chipCartao(c)} ${estadoTag}<span class="small muted grow">fecha ${dataBR(r.fechamento)} · ${quando(r.venc)}</span></div>
+    <p class="frase">${fraseFatura(r)}</p>
     <div class="grid g4">
       <div><div class="tiny muted">Total ${r.totalPrevisto > 0 ? '(com previstos)' : ''}</div><div class="num" style="font-size:20px;font-weight:680">${brl(r.totalGeral)}</div></div>
       <div><div class="tiny muted">Minha parte</div><div class="num" style="font-size:20px;font-weight:680">${brl(r.minha)}</div></div>
@@ -463,11 +498,12 @@ function vFaturas() {
     ${fechamentoHTML(r)}
     ${r.pago > (r.estado === 'fechada' ? r.total : r.totalGeral) + 0.009 ? `<div class="alerta info small" style="margin-top:12px">Pagamentos somam ${brl(r.pago - (r.estado === 'fechada' ? r.total : r.totalGeral))} a mais que os lançamentos desta fatura. Pode faltar algum lançamento ou um pagamento estar na fatura errada (veja abaixo).</div>` : ''}
     ${r.estado === 'fechada' && r.faltaPagar > 0.009 ? `<div class="alerta bad" style="margin-top:12px"><div class="grow small">Nenhum pagamento registrado cobre esta fatura.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${r.venc}">Já paguei</button></div>` : ''}
-    <div class="row wrap" style="margin-top:14px;align-items:flex-end">
+    <details class="conferir" ${r.meta?.valorInformado != null && Math.abs(r.meta.valorInformado - r.total) >= 0.01 ? 'open' : ''}><summary>Conferir com o valor do app do banco ${conferenciaTag(r) || ''}</summary>
+    <div class="row wrap" style="margin-top:10px;align-items:flex-end">
       <label class="campo grow" style="min-width:180px"><span>Valor desta fatura no app do banco</span><input class="inp" inputmode="decimal" placeholder="ex.: 2.075,96" data-chg="valor-informado" value="${r.meta?.valorInformado != null ? num(r.meta.valorInformado) : ''}"></label>
-      <div style="padding-bottom:10px">${conferenciaTag(r) || ''}</div>
     </div>
-    ${r.meta?.valorInformado != null && Math.abs(r.meta.valorInformado - r.total) >= 0.01 ? `<p class="small muted" style="margin:8px 0 0">Lançado aqui: ${brl(r.total)}. ${r.meta.valorInformado > r.total ? 'O banco mostra mais — falta importar compras recentes (exporte o CSV de novo) ou lançar alguma à mão.' : 'O banco mostra menos — algum pagamento pode ter abatido esta fatura (veja Pagamentos) ou há estorno.'}</p>` : ''}
+    ${r.meta?.valorInformado != null && Math.abs(r.meta.valorInformado - r.total) >= 0.01 ? `<p class="small muted" style="margin:8px 0 0">Lançado aqui: ${brl(r.total)}. ${r.meta.valorInformado > r.total ? `O banco mostra mais — faltam compras recentes: ${formatoFatura(c) === 'CSV' ? 'exporte o CSV de novo ou ' : ''}cole os lançamentos da tela do banco (botão "Colar lançamentos").` : 'O banco mostra menos — algum pagamento pode ter abatido esta fatura (veja Pagamentos) ou há estorno.'}</p>` : ''}
+    </details>
   </section>
   ${pagsDoArquivo.length || pagsDeOutros.length ? `<section class="card">
     <div class="card-h"><h2>Pagamentos</h2><span class="tiny muted">diga de qual fatura é cada pagamento</span></div>
@@ -503,9 +539,14 @@ function vPessoas() {
     const marcar = it.tipo === 'projecao'
       ? '<span class="check" style="width:20px" aria-hidden="true"></span>'
       : `<label class="check"><input type="checkbox" data-chg="item-pago" data-arg="${esc(it.id)}" ${it.pago ? 'checked' : ''} ${it.tipo === 'grupo' && it.pago ? 'disabled' : ''} aria-label="Pago"></label>`;
-    return `<li class="${it.pago ? 'pago' : ''} ${it.tipo === 'projecao' ? 'previsto' : ''}">${marcar}
-      <div class="desc"><b>${esc(it.desc)}</b><small>${esc(c?.nome || '')} · fatura ${diaMes(it.venc)}${it.previsto || it.tipo === 'projecao' ? ' · previsto' : ''}${it.pagoParcial > 0 && !it.pago ? ` · pagou ${brl(it.pagoParcial)}` : ''}</small></div>
-      ${sit[it.situacao] || ''}<div class="valor">${brl(it.pago ? it.valor : it.falta)}</div></li>`;
+    // tocar no item abre a compra (ou o grupo) para ver e editar; o quadradinho continua só marcando como pago
+    const abrir = it.tipo === 'grupo' ? `data-act="grupo-abrir-de" data-arg="${esc(it.grupoId)}"`
+      : `data-act="editar-lanc" data-arg="${esc(it.tipo === 'projecao' ? `${it.id.split('|')[0].split('_').slice(1, 3).join('_')}|proj` : it.lancId)}"`;
+    const l = it.tipo === 'linha' ? d.lancamentos.find((x) => x.id === it.lancId) : null;
+    const compra = l && Math.abs(l.valor - it.valor) > 0.004 ? ` · compra ${brl(l.valor)}` : '';
+    return `<li class="click ${it.pago ? 'pago' : ''} ${it.tipo === 'projecao' ? 'previsto' : ''}" ${abrir}>${marcar}
+      <div class="desc"><b>${esc(it.desc)}</b><small>${esc(c?.nome || '')} · fatura ${diaMes(it.venc)}${l?.data ? ` · compra em ${diaMes(l.data)}` : ''}${compra}${it.previsto || it.tipo === 'projecao' ? ' · previsto' : ''}${it.pagoParcial > 0 && !it.pago ? ` · pagou ${brl(it.pagoParcial)}` : ''}</small></div>
+      ${sit[it.situacao] || ''}<div class="valor">${brl(it.pago ? it.valor : it.falta)}</div><span class="seta" aria-hidden="true">${icon('chev')}</span></li>`;
   };
   return `
   ${cobr.length ? `<section class="card"><div class="card-h"><h2>Cobrar agora</h2><span class="tiny muted">${d.config?.diasAntesCobranca ?? 2} dias antes do vencimento, ou atrasados</span></div>
@@ -516,7 +557,7 @@ function vPessoas() {
     <div class="card kpi"><div class="rot">Parcelas futuras</div><div class="val">${brl(fut)}</div><div class="sub">ainda não lançadas</div></div>
     <div class="card kpi"><div class="rot">Pessoas devendo</div><div class="val">${pessoas.filter((p) => p.falta > 0).length}</div></div>
   </div>
-  <div class="row"><button class="btn" data-act="pessoa-form">${icon('plus')} Pessoa</button><span class="tiny muted grow">Toque no nome para ver as compras e marcar o que já foi pago.</span></div>
+  <div class="row"><button class="btn" data-act="pessoa-form">${icon('plus')} Pessoa</button><span class="tiny muted grow">Toque no nome para ver as compras. Toque numa compra para abrir e mudar quanto a pessoa deve; o quadradinho marca como pago.</span></div>
   ${pessoas.map((p) => {
     const aberto = S.abertos.has(p.pessoa.id);
     const pend = p.itens.filter((i) => !i.pago && i.situacao !== 'futuro').sort((a, b) => a.venc.localeCompare(b.venc));
@@ -832,8 +873,15 @@ function vAjustes() {
   return `
   <section class="card form">
     <h2>Renda e compromissos <span class="tag">só você vê</span></h2>
-    <p class="small muted" style="margin:0">Usados para dizer se uma viagem ou compra parcelada cabe no seu mês. Ficam no seu repositório, não no do casal.</p>
-    <div class="lado"><label class="campo"><span>Renda líquida por mês (R$)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="renda" value="${orc.renda ? num(orc.renda) : ''}"></label>
+    <p class="small muted" style="margin:0">Usados no quadro "Salário x faturas" do Resumo e para dizer se uma viagem ou compra parcelada cabe no seu mês. Ficam no seu repositório, não no do casal.</p>
+    <div class="small" style="font-weight:600;margin-top:4px">Salário (recebo de 15 em 15 dias)</div>
+    <p class="tiny muted" style="margin:-6px 0 0">Informe o que cai na conta em cada pagamento, já sem INSS, refeição, plano de saúde e os outros descontos do holerite.</p>
+    ${PL.PAGAMENTOS.map(([k, rotulo]) => { const p = orc.salario?.[k] || {}; return `<div class="lado tres">
+      <label class="campo"><span>${rotulo} (R$)</span><input class="inp" inputmode="decimal" data-chg="salario" data-arg="${k}|valor" value="${p.valor ? num(p.valor) : ''}"></label>
+      <label class="campo"><span>Dia</span><input class="inp" type="number" min="1" max="31" data-chg="salario" data-arg="${k}|dia" value="${p.dia || ''}"></label>
+      <label class="campo"><span>Contar</span><select class="inp" data-chg="salario" data-arg="${k}|util"><option value="0" ${!p.util ? 'selected' : ''}>dia do mês</option><option value="1" ${p.util ? 'selected' : ''}>dia útil (ex.: 5º)</option></select></label></div>`; }).join('')}
+    <label class="campo"><span>Contas fixas e o da casa saem do</span><select class="inp" data-chg="salario" data-arg="contasNo"><option value="saldo" ${(orc.salario?.contasNo || 'saldo') === 'saldo' ? 'selected' : ''}>Salário</option><option value="adiant" ${orc.salario?.contasNo === 'adiant' ? 'selected' : ''}>Adiantamento</option><option value="dividir" ${orc.salario?.contasNo === 'dividir' ? 'selected' : ''}>Metade em cada</option></select></label>
+    <div class="lado"><label class="campo"><span>Renda líquida por mês (R$)</span>${PL.salarioConfigurado(orc) ? `<input class="inp" disabled value="${num(PL.rendaMensal(orc))}" title="soma do adiantamento e do salário">` : `<input class="inp" inputmode="decimal" data-chg="orc" data-arg="renda" value="${orc.renda ? num(orc.renda) : ''}">`}</label>
     <label class="campo"><span>Contas fixas fora do cartão (R$/mês)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="compromissos" value="${orc.compromissos ? num(orc.compromissos) : ''}" placeholder="aluguel, luz, internet…"></label></div>
     <div class="lado"><label class="campo"><span>Quanto separa para a casa (R$/mês)</span><input class="inp" inputmode="decimal" data-chg="orc" data-arg="guardarCasa" value="${orc.guardarCasa ? num(orc.guardarCasa) : ''}"></label>
     <label class="campo"><span>Margem de segurança (% da renda)</span><input class="inp" type="number" min="0" max="80" data-chg="orc" data-arg="margem" value="${Math.round((orc.margem ?? 0.1) * 100)}"></label></div>
@@ -923,6 +971,7 @@ function modalEditarLanc(id, preset = {}) {
     if (l.grupo) ed.modo = 'grupo';
     else if (dv.length === 1 && minha < 0.005) { ed.modo = 'pessoa'; ed.pessoa = dv[0].pessoa; }
     else if (dv.length === 1 && Math.abs(dv[0].valor - l.valor / 2) < 0.011) { ed.modo = 'pessoa'; ed.pessoa = dv[0].pessoa; ed.metade = true; }
+    else if (dv.length === 1) { ed.modo = 'pessoa'; ed.pessoa = dv[0].pessoa; ed.valorPessoa = dv[0].valor; }
     else if (dv.length) {
       ed.modo = 'dividido'; ed.sel = new Set([...(minha > 0.004 ? [EU] : []), ...dv.map((x) => x.pessoa)]);
       const igual = C.dividirIgual(l.valor, [...ed.sel]);
@@ -951,8 +1000,12 @@ function modalEditarLanc(id, preset = {}) {
       corpo += `<div><div class="small" style="font-weight:550;color:var(--ink-2);margin-bottom:6px">De quem é?</div>
         <div class="seg">${[['meu', 'Só meu'], ['pessoa', 'De uma pessoa'], ['dividido', 'Dividido'], ['grupo', 'Grupo']].map(([k, t]) => `<button type="button" data-e-modo="${k}" aria-pressed="${ed.modo === k}">${t}</button>`).join('')}</div></div>`;
       if (ed.modo === 'pessoa') {
+        const sugerido = Number.isFinite(valorN) ? (ed.metade ? C.dividirIgual(valorN, [EU, ed.pessoa])[0]?.valor : valorN) : null;
+        const vp = ed.valorPessoa ?? sugerido;
         corpo += `<div class="lado"><label class="campo"><span>Pessoa</span><select class="inp" data-e="pessoa">${outras.map((p) => `<option value="${p.id}" ${p.id === ed.pessoa ? 'selected' : ''}>${esc(p.nome)}</option>`).join('')}</select></label>
           <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" data-e="metade" ${ed.metade ? 'checked' : ''}> meio a meio comigo</label></div>
+          <label class="campo"><span>Quanto ${esc(nome(ed.pessoa))} te deve desta compra (R$)</span><input class="inp" inputmode="decimal" data-e="valorPessoa" value="${vp != null && Number.isFinite(Number(vp)) ? num(vp) : ''}"></label>
+          ${Number.isFinite(valorN) && vp != null && Number(vp) < valorN - 0.004 ? `<p class="tiny muted" style="margin:-6px 0 0">O resto (${brl(valorN - Number(vp))}) fica como seu.</p>` : ''}
           <label class="check"><input type="checkbox" data-e-pago="${ed.pessoa}" ${ed.pagos[ed.pessoa] ? 'checked' : ''}> ${esc(nome(ed.pessoa))} já me pagou</label>`;
       }
       if (ed.modo === 'dividido') {
@@ -1012,6 +1065,9 @@ function modalEditarLanc(id, preset = {}) {
           if ((k === 'data' || k === 'cartao') && !ed.vencManual && ed.data) ed.venc = C.vencDaCompra(cartao(ed.cartao), ed.data);
           if (k === 'parcT' && ed.parcN > ed.parcT) ed.parcN = ed.parcT;
           if (k === 'desc') { const p = detectaParcela(ed.desc); if (p && ed.parcT === 1) { ed.parcN = p.n; ed.parcT = p.total; return true; } }
+          if (k === 'valorPessoa') { const n = parseValor(t.value); ed.valorPessoa = Number.isFinite(n) ? round2(n) : null; return true; }
+          if (k === 'metade') ed.valorPessoa = null;
+          if (k === 'valor') { ed.valorPessoa = null; return ed.modo === 'pessoa'; }
           // campos de texto não redesenham o formulário (para não perder o foco ao digitar)
           return !['desc', 'valor', 'obs', 'fxValor'].includes(k);
         }
@@ -1038,7 +1094,8 @@ function modalEditarLanc(id, preset = {}) {
     const keep = (arr) => arr.map((x) => ({ ...x, pago: !!ed.pagos[x.pessoa], pagoEm: ed.pagos[x.pessoa] ? (l?.divisao?.find((y) => y.pessoa === x.pessoa)?.pagoEm || S.hoje) : null }));
     if (ed.modo === 'pessoa') {
       if (!ed.pessoa) return toast('Escolha a pessoa.');
-      divisao = keep(ed.metade ? C.dividirIgual(valor, [EU, ed.pessoa]) : [{ pessoa: ed.pessoa, valor }]);
+      if (ed.valorPessoa != null && (ed.valorPessoa <= 0 || ed.valorPessoa > Math.abs(valor) + 0.009)) return toast('O valor da pessoa precisa ser maior que zero e até o valor da compra.');
+      divisao = keep(ed.valorPessoa != null ? [{ pessoa: ed.pessoa, valor: ed.valorPessoa }] : (ed.metade ? C.dividirIgual(valor, [EU, ed.pessoa]) : [{ pessoa: ed.pessoa, valor }]));
     } else if (ed.modo === 'dividido') {
       const sel = [...ed.sel];
       if (sel.filter((p) => p !== EU).length === 0) return toast('Escolha pelo menos uma pessoa além de você.');
@@ -1512,6 +1569,78 @@ function modalItem(vid, iid, categoria) {
   }
 }
 
+// ---------- colar lançamentos (fatura aberta, antes de o banco liberar o arquivo) ----------
+function modalColar(cartaoPref) {
+  const d = S.dados;
+  const st = { cartao: cartaoPref && cartao(cartaoPref) ? cartaoPref : (d.cartoes.find((c) => formatoFatura(c) === 'PDF') || d.cartoes[0]).id, texto: '', lidas: null, ignoradas: [], marcadas: new Set() };
+  // já está no app: mesmo cartão, mesmo valor e data até 3 dias de diferença
+  const jaExiste = (x, cid) => d.lancamentos.some((l) => l.cartao === cid && l.origem !== 'previsto' && l.tipo !== 'pagamento' && cents(l.valor) === cents(x.valor) && l.data && Math.abs(difDias(l.data, x.data)) <= 3);
+  const ler = () => {
+    const r = parseTextoLancamentos(st.texto, S.hoje);
+    const c = cartao(st.cartao);
+    st.ignoradas = [...r.ignoradas, ...r.linhas.filter((x) => x.tipo === 'pagamento').map((x) => `${diaMes(x.data)} ${x.desc} (pagamento: use "Já paguei")`)];
+    st.lidas = r.linhas.filter((x) => x.tipo !== 'pagamento').map((x, i) => {
+      const dup = jaExiste(x, c.id);
+      const venc = C.vencDaCompra(c, x.data);
+      // parcela 2 em diante que o app já prevê nesta fatura (mesma compra e mesmo número): não duplica
+      const parc = x.parcela && x.parcela.n > 1 && C.resumoFatura(d, c.id, venc, S.hoje).previstas
+        .some((l) => l.parcela && l.parcela.n === x.parcela.n && l.parcela.total === x.parcela.total && raizDesc(l.desc) === raizDesc(x.desc));
+      return { ...x, i, venc, motivo: dup ? 'já está no app' : (parc ? 'parcela já prevista' : '') };
+    });
+    st.marcadas = new Set(st.lidas.filter((x) => !x.motivo).map((x) => x.i));
+  };
+  const tela = (m) => {
+    const c = cartao(st.cartao);
+    const sel = st.lidas ? st.lidas.filter((x) => st.marcadas.has(x.i)) : [];
+    const soma = round2(sel.reduce((a, x) => a + x.valor, 0));
+    m.innerHTML = `${cabecalhoModal('Colar lançamentos')}
+    <div class="form">
+      <p class="small muted" style="margin:0">Para a fatura que ainda não fechou: copie os lançamentos da tela do banco (internet banking ou app) e cole aqui. Também dá para digitar, uma compra por linha: <code>05/11 Uber 23,90</code>.</p>
+      <label class="campo"><span>Cartão</span><select class="inp" data-c="cartao">${d.cartoes.map((x) => `<option value="${x.id}" ${x.id === st.cartao ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select></label>
+      <label class="campo"><span>Texto</span><textarea class="inp" rows="7" data-c="texto" placeholder="02/11  UBER *TRIP  23,90&#10;03/11  MERCADO  R$ 154,30">${esc(st.texto)}</textarea></label>
+      <div><button type="button" class="btn" data-c-ler>Ler texto</button></div>
+      ${st.lidas ? (st.lidas.length ? `<div>
+        <div class="small" style="font-weight:600;margin-bottom:4px">${st.lidas.length} lançamento${st.lidas.length > 1 ? 's' : ''} encontrado${st.lidas.length > 1 ? 's' : ''} · confira antes de lançar</div>
+        <ul class="lista">${st.lidas.map((x) => `<li><label class="check"><input type="checkbox" data-c-sel="${x.i}" ${st.marcadas.has(x.i) ? 'checked' : ''}></label>
+          <div class="desc"><b>${esc(x.desc)}</b><small>${diaMes(x.data)} · fatura ${diaMes(x.venc)}${x.parcela ? ` · parcela ${x.parcela.n}/${x.parcela.total}` : ''}${x.motivo ? ` · <span class="tag warn">${x.motivo}</span>` : ''}</small></div>
+          <div class="valor">${brl(x.valor)}</div></li>`).join('')}</ul></div>` : '<div class="alerta warn small">Não encontrei nenhuma linha com data e valor. Confira se o texto tem a data (dd/mm) e o valor (ex.: 23,90).</div>') : ''}
+      ${st.ignoradas.length ? `<details class="small"><summary class="muted">${st.ignoradas.length} linha${st.ignoradas.length > 1 ? 's' : ''} não aproveitada${st.ignoradas.length > 1 ? 's' : ''}</summary><ul class="tiny muted" style="margin:6px 0 0;padding-left:18px">${st.ignoradas.slice(0, 30).map((x) => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
+      ${sel.length ? `<p class="tiny muted" style="margin:0">Entram como "lançado à mão" no ${esc(c.nome)}, com as suas regras automáticas. Quando você importar o ${formatoFatura(c)} da fatura fechada, cada um é trocado pelo do banco (mesmo valor, até 3 dias de diferença) mantendo de quem é.</p>` : ''}
+    </div>
+    <div class="modal-f"><button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button type="button" class="btn pri" data-c-ok ${sel.length ? '' : 'disabled'}>Lançar ${sel.length || ''} ${sel.length ? `(${brl(soma)})` : ''}</button></div>`;
+  };
+  abrirModal('', {
+    largo: true,
+    aoMontar: (m) => {
+      tela(m);
+      m.addEventListener('input', (e) => { if (e.target.dataset.c === 'texto') st.texto = e.target.value; });
+      m.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.dataset.c === 'cartao') { st.cartao = t.value; if (st.lidas) ler(); tela(m); }
+        if (t.dataset.cSel != null) { const i = Number(t.dataset.cSel); t.checked ? st.marcadas.add(i) : st.marcadas.delete(i); tela(m); }
+      });
+      m.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        if (b.hasAttribute('data-c-ler')) { ler(); tela(m); }
+        if (b.hasAttribute('data-c-ok')) {
+          const sel = st.lidas.filter((x) => st.marcadas.has(x.i));
+          const cid = st.cartao;
+          mutar((dd) => {
+            for (const x of sel) {
+              const l = { id: uid('l'), cartao: cid, venc: x.venc, data: x.data, desc: x.desc, valor: x.valor, tipo: x.tipo, parcela: x.parcela || null, fixo: false, divisao: [], grupo: null, obs: '', origem: 'manual', refVenc: null };
+              classificarNovo(dd, l);
+              dd.lancamentos.push(l);
+            }
+          }, `app: ${sel.length} lançamento(s) colado(s) no ${cartao(cid).nome}`);
+          fecharModal();
+          S.fat = { cartao: cid, venc: sel.map((x) => x.venc).sort().pop(), filtro: 'todos' }; S.view = 'faturas'; render(); window.scrollTo(0, 0);
+          toast(`${sel.length} lançamento${sel.length > 1 ? 's' : ''} no ${cartao(cid).nome}. Toque em cada um para dizer de quem é.`, 4000);
+        }
+      });
+    },
+  });
+}
+
 // ---------- importação ----------
 let pdfjsMod = null;
 async function lerArquivo(file, cartaoPref) {
@@ -1635,6 +1764,8 @@ const ACOES = {
   'pessoa-form': (a) => modalPessoa(a),
   'grupo-form': (a) => modalGrupo(a),
   'grupo-abrir': (a) => { S.grupoSel = a; render(); window.scrollTo(0, 0); },
+  'grupo-abrir-de': (a) => { S.view = 'grupos'; S.grupoSel = a; render(); window.scrollTo(0, 0); },
+  colar: (a) => modalColar(a || null),
   'grupo-voltar': () => { S.grupoSel = null; render(); },
   'regra-nova': () => mutar((dd) => { dd.regras.push({ id: uid('r'), contem: 'texto da fatura', pessoa: EU, modo: 'inteiro', fixo: false }); }, 'app: regra criada'),
   'regra-apagar': (a) => mutar((dd) => { dd.regras = dd.regras.filter((r) => r.id !== a); }, 'app: regra apagada'),
@@ -1680,6 +1811,8 @@ const ACOES = {
 };
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
+  const ctrl = e.target.closest('input, select, textarea, label, button, a');
+  if (ctrl && ctrl !== el && el.contains(ctrl)) return;
   const f = ACOES[el.dataset.act]; if (!f) return;
   if (el.tagName === 'A') e.preventDefault();
   f(el.dataset.arg);
@@ -1737,6 +1870,19 @@ const MUDANCAS = {
       if (a === 'margem') dd.orcamento.margem = Math.min(0.8, Math.max(0, (Number(v) || 0) / 100));
       else { const n = lerNum(v); dd.orcamento[a] = n != null && n >= 0 ? n : (a === 'renda' ? null : 0); }
     }, 'app: renda e compromissos');
+  },
+  salario: (v, a) => {
+    const [k, campo] = a.split('|');
+    S.manterScroll = true;
+    mutar((dd) => {
+      dd.orcamento ||= { renda: null, compromissos: 0, guardarCasa: 0, margem: 0.1 };
+      const sal = (dd.orcamento.salario ||= { adiant: {}, saldo: {}, contasNo: 'saldo' });
+      if (k === 'contasNo') { sal.contasNo = v; return; }
+      sal[k] ||= {};
+      if (campo === 'valor') { const n = lerNum(v); sal[k].valor = n != null && n > 0 ? n : null; }
+      else if (campo === 'dia') { const n = Math.round(Number(v)); sal[k].dia = n >= 1 && n <= 31 ? n : null; }
+      else sal[k].util = v === '1';
+    }, 'app: salário');
   },
   'dias-cobranca': (v) => { S.manterScroll = true; mutar((dd) => { dd.config ||= {}; dd.config.diasAntesCobranca = Math.max(0, Math.min(10, Number(v) || 0)); }, 'app: dias de cobrança'); },
 };
