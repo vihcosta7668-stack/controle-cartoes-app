@@ -8,6 +8,8 @@ const K = {
 };
 // Chaves da versão com GitHub: apagadas quando este aparelho entra no Supabase.
 const ANTIGAS = ['cc_cfg', 'cc_tok', 'cc_cache', 'cc_comp_cfg', 'cc_comp_tok', 'cc_comp_cache'];
+import { SUPABASE } from './config.js';
+
 const ITER = 310000;
 
 const enc = new TextEncoder(); const dec = new TextDecoder();
@@ -80,7 +82,7 @@ export class Sessao {
   // Primeiro acesso neste aparelho: entra com e-mail e senha e guarda a sessão cifrada pelo PIN.
   async entrar({ url, chave, email, senha, pin }) {
     if (!pin || pin.length < 6) throw new Error('Use um PIN/senha com pelo menos 6 caracteres.');
-    this.cfg = { url: normalizarUrl(url), chave: String(chave || '').trim() };
+    this.cfg = { url: normalizarUrl(url || SUPABASE.url), chave: String(chave || SUPABASE.chave || '').trim() };
     if (!this.cfg.chave) throw new Error('Cole a chave anon (pública) do projeto.');
     let resp;
     try { resp = await this.auth('token?grant_type=password', { email: String(email).trim(), password: senha }); }
