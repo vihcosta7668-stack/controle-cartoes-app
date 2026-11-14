@@ -49,7 +49,7 @@ async function manterConectado(sim) {
 const CARTOES_MODELO = {
   nubank: { id: 'nubank', nome: 'Nubank', fechamento: 11, vencimento: 18, cor: '#820ad1', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Nubank' } },
   itau: { id: 'itau', nome: 'Itaú', fechamento: 29, vencimento: 5, cor: '#ec7000', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Itaú' } },
-  mercadopago: { id: 'mercadopago', nome: 'Mercado Pago', fechamento: 5, vencimento: 10, cor: '#00a6e0', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Mercado Pago' } },
+  mercadopago: { id: 'mercadopago', nome: 'Mercado Pago', fechamento: 5, vencimento: 10, cor: '#232a38', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Mercado Pago' } },
 };
 const formatoFatura = (c) => (c.id === 'nubank' ? 'CSV' : 'PDF');
 function dadosVazios(ids = ['nubank', 'itau']) {
@@ -284,14 +284,20 @@ function resolverConflitoComp() {
 
 // ======================= estrutura =======================
 const NAV = [
-  ['resumo', 'Resumo', 'home'], ['faturas', 'Faturas', 'card'], ['pessoas', 'Me devem', 'people'], ['grupos', 'Grupos', 'group'], ['futuro', 'Futuro', 'chart'],
+  ['resumo', 'Início', 'home'], ['faturas', 'Faturas', 'card'], ['pessoas', 'Me devem', 'people'], ['grupos', 'Grupos', 'group'], ['futuro', 'Futuro', 'chart'],
   ['casa', 'Casa', 'obra'], ['viagens', 'Viagens', 'aviao'],
 ];
+// No celular a barra de baixo tem 4 telas + "Mais"; as outras abrem num painel.
+const NAV_BAIXO = ['resumo', 'faturas', 'pessoas', 'futuro'];
+const NAV_MAIS = [...NAV.filter(([id]) => !NAV_BAIXO.includes(id)), ['ajustes', 'Ajustes', 'gear']];
+function modalMais() {
+  abrirModal(`${cabecalhoModal('Mais')}<div class="mais-grid">${NAV_MAIS.map(([id, nomeT, ic]) => `<button class="mais-item" data-act="nav" data-arg="${id}" ${S.view === id ? 'aria-current="page"' : ''}><span class="circ">${icon(ic)}</span>${nomeT}</button>`).join('')}</div>`);
+}
 function render() {
   if (!S.dados) return;
   const cobr = C.cobrancasDevidas(S.dados, S.hoje, S.dados.config?.diasAntesCobranca ?? 2).length;
   const views = { resumo: vResumo, faturas: vFaturas, pessoas: vPessoas, grupos: vGrupos, futuro: vFuturo, casa: vCasa, viagens: vViagens, ajustes: vAjustes };
-  const titulo = { resumo: 'Resumo', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', casa: 'Nossa casa', viagens: 'Viagens', ajustes: 'Ajustes' }[S.view];
+  const titulo = { resumo: 'Início', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', casa: 'Nossa casa', viagens: 'Viagens', ajustes: 'Ajustes' }[S.view];
   const navBtn = ([id, nome, ic]) => `<button data-act="nav" data-arg="${id}" ${S.view === id ? 'aria-current="page"' : ''}>${icon(ic)}<span>${nome}</span>${id === 'pessoas' && cobr ? `<span class="badge-dot">${cobr}</span>` : ''}</button>`;
   const y = window.scrollY;
   app.innerHTML = `<div class="shell">
@@ -302,16 +308,18 @@ function render() {
       <button data-act="nav" data-arg="ajustes" ${S.view === 'ajustes' ? 'aria-current="page"' : ''}>${icon('gear')}<span>Ajustes</span></button>
     </nav>
     <div>
-      <header class="topbar">
-        <div class="titulo"><h1>${titulo}</h1><small>Hoje, ${dataBR(S.hoje)}</small></div>
+      <header class="topbar${S.view === 'resumo' ? ' inicio' : ''}">
+        <div class="titulo"><h1>${S.view === 'resumo' ? 'Olá!' : titulo}</h1><small>${S.view === 'resumo' ? 'Hoje é' : 'Hoje,'} ${dataBR(S.hoje)}</small></div>
         <span class="sync"></span>
         <button class="btn icone ghost so-mobile" data-act="nav" data-arg="ajustes" aria-label="Ajustes">${icon('gear')}</button>
       </header>
       <main class="pilha">${views[S.view]()}</main>
     </div>
-    <nav class="nav ${NAV.length > 5 ? 'n7' : ''}" style="--nav-n:${NAV.length}" aria-label="Menu">${NAV.map(navBtn).join('')}</nav>
+    <nav class="nav" style="--nav-n:${NAV_BAIXO.length + 1}" aria-label="Menu">${NAV.filter(([id]) => NAV_BAIXO.includes(id)).map(navBtn).join('')}<button data-act="mais" ${NAV_BAIXO.includes(S.view) ? '' : 'aria-current="page"'}>${icon('grid')}<span>Mais</span></button></nav>
   </div>`;
   atualizarSync(); ligarGraficos(app);
+  const sel = app.querySelector('.cartoes.mini [aria-pressed="true"]'); // cartão escolhido em Faturas fica à vista
+  if (sel) sel.parentElement.scrollLeft = sel.offsetLeft - sel.parentElement.offsetLeft - 16;
   if (S.manterScroll) window.scrollTo(0, y); S.manterScroll = false;
 }
 
@@ -340,6 +348,16 @@ const quando = (venc) => {
   const d = difDias(S.hoje, venc);
   return d === 0 ? 'vence hoje' : d === 1 ? 'vence amanhã' : d > 0 ? `vence em ${d} dias` : `venceu há ${-d} dia${d === -1 ? '' : 's'}`;
 };
+// Cartão desenhado na cor do cartão de verdade: chip, nome do banco no canto e tarja com a sua parte.
+function cartaoFis(c, r, { act = 'ver-fatura', arg = `${c.id}|${r.venc}`, sel = null, rotulo = 'Fatura atual' } = {}) {
+  return `<button class="cartao-fis${sel === false ? ' apagado' : ''}" style="--cor:${esc(c.cor || '#5f6168')}" data-act="${act}" data-arg="${esc(arg)}" ${sel != null ? `aria-pressed="${sel}"` : ''}>
+    <span class="cf-topo"><span class="cf-rot">${rotulo}</span><span class="cf-chip" aria-hidden="true"></span></span>
+    <span class="cf-val num">${brl(r.totalGeral)}</span>
+    <span class="cf-sub">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)}</span>
+    <span class="cf-base"><span class="cf-marca">${esc(c.nome.toLowerCase())}</span>${conferenciaTag(r)}</span>
+    <span class="cf-tarja">${barraMinha(r.minha, r.outros)}<span>sua parte <b class="num">${brl(r.minha)}</b> · dos outros <b class="num">${brl(r.outros)}</b></span></span>
+  </button>`;
+}
 function faturasEmAberto(c) { // fechadas sem pagamento completo (últimos 3 meses)
   const ab = C.faturaAberta(c, S.hoje);
   const out = [];
@@ -368,26 +386,29 @@ function vResumo() {
   const atrasado = pessoas.reduce((s, p) => s + p.atrasado, 0);
   const meses = C.previsaoMeses(d, S.hoje, 6);
   return `
-  ${salarioHTML()}
+  <section class="hero">
+    <div class="hero-rot">Sua parte nas faturas abertas</div>
+    <div class="hero-val num">${brl(minha)}</div>
+    <div class="hero-linhas">
+      <div><span>Total nas faturas</span><b class="num">${brl(tot)}</b></div>
+      <div><span>Falta receber</span><b class="num">${brl(receber)}</b>${atrasado > 0 ? `<em>${brl(atrasado)} atrasado</em>` : ''}</div>
+      <div><span>Falta pagar aos bancos</span><b class="num">${brl(faltaBancos)}</b></div>
+    </div>
+    <div class="atalhos">
+      <button data-act="importar"><span class="circ">${icon('upload')}</span>Importar</button>
+      <button data-act="colar"><span class="circ">${icon('copy')}</span>Colar</button>
+      <button data-act="novo-lanc"><span class="circ">${icon('plus')}</span>Lançar</button>
+      <button data-act="nav" data-arg="pessoas"><span class="circ">${icon('chat')}${cobr.length ? `<i class="badge-dot">${cobr.length}</i>` : ''}</span>Cobrar</button>
+      <button data-act="nav" data-arg="futuro"><span class="circ">${icon('chart')}</span>Futuro</button>
+    </div>
+  </section>
   ${cobr.length ? `<div class="alerta warn"><div class="grow"><b>${cobr.length} cobrança${cobr.length > 1 ? 's' : ''} para fazer</b><br><span class="small">${esc(cobr.map((c) => nome(c.pessoa)).slice(0, 5).join(', '))}${cobr.length > 5 ? '…' : ''}</span></div><button class="btn sm" data-act="nav" data-arg="pessoas">Ver</button></div>` : ''}
-  <div class="grid g4">
-    <div class="card kpi"><div class="rot">Faturas abertas</div><div class="val">${brl(tot)}</div><div class="sub">${res.map((x) => `${esc(x.c.nome)} ${brl(x.r.totalGeral)}`).join(' · ')}</div></div>
-    <div class="card kpi"><div class="rot">Minha parte</div><div class="val">${brl(minha)}</div><div class="sub">dos outros ${brl(tot - minha)}</div></div>
-    <div class="card kpi"><div class="rot">Falta pagar aos bancos</div><div class="val">${brl(faltaBancos)}</div><div class="sub">inclui fatura fechada sem pagamento</div></div>
-    <div class="card kpi"><div class="rot">Falta receber</div><div class="val">${brl(receber)}</div><div class="sub">${atrasado > 0 ? `<span class="tag bad">${brl(atrasado)} atrasado</span>` : 'nada atrasado'}</div></div>
+  <div>
+    <div class="secao-h"><h2>Meus cartões</h2><button class="btn sm ghost" data-act="nav" data-arg="faturas">Faturas ${icon('chev')}</button></div>
+    <div class="cartoes">${res.map(({ c, r }) => cartaoFis(c, r)).join('')}</div>
+    ${res.flatMap(({ c, abertas }) => abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">${esc(c.nome)}, fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`)).join('')}
   </div>
-  <div class="grid g2m">
-    ${res.map(({ c, r, abertas }) => `
-    <section class="card">
-      <div class="card-h">${chipCartao(c)}<span class="small muted">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)} (${diaMes(r.venc)})</span></div>
-      <div class="spread"><div><div class="kpi" style="padding:0"><div class="val">${brl(r.totalGeral)}</div>
-        <div class="sub">lançado ${brl(r.total)}${r.totalPrevisto > 0 ? ` · previsto ${brl(r.totalPrevisto)}` : ''}</div></div></div>
-        ${conferenciaTag(r)}</div>
-      <div style="margin:12px 0 8px">${barraMinha(r.minha, r.outros)}</div>${legenda(r.minha, r.outros)}
-      ${abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">Fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`).join('')}
-      <div class="row wrap" style="margin-top:14px"><button class="btn sm" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">Ver fatura</button><button class="btn sm" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar</button><button class="btn sm" data-act="colar" data-arg="${c.id}">${icon('copy')} Colar</button><button class="btn sm" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar</button></div>
-    </section>`).join('')}
-  </div>
+  ${salarioHTML()}
   <section class="card">
     <div class="card-h"><h2>Próximos 6 meses</h2>${legenda(meses.reduce((s, m) => s + m.minha, 0), meses.reduce((s, m) => s + m.outros, 0))}</div>
     ${graficoBarras(meses, { largura: larguraGrafico() })}
@@ -481,8 +502,8 @@ function vFaturas() {
       <div class="valor">${brl(l.valor)}${Math.abs(minha - l.valor) > 0.004 ? `<small>minha ${brl(minha)}</small>` : ''}</div></li>`;
   };
   return `
+  <div class="cartoes mini" role="group" aria-label="Cartão">${d.cartoes.map((x) => cartaoFis(x, x.id === c.id ? r : C.resumoFatura(d, x.id, C.faturaAberta(x, S.hoje), S.hoje), { act: 'fat-cartao', arg: x.id, sel: x.id === c.id, rotulo: x.id === c.id && r.venc !== C.faturaAberta(x, S.hoje) ? `Fatura de ${dataBR(r.venc)}` : 'Fatura atual' })).join('')}</div>
   <div class="row wrap">
-    <div class="seg" role="group" aria-label="Cartão">${d.cartoes.map((x) => `<button data-act="fat-cartao" data-arg="${x.id}" aria-pressed="${x.id === c.id}">${esc(x.nome)}</button>`).join('')}</div>
     <select class="inp" style="width:auto;flex:1;min-width:190px" data-chg="fat-venc" aria-label="Fatura">
       ${vencs.map((v) => `<option value="${v}" ${v === r.venc ? 'selected' : ''}>Vence ${dataBR(v)}${v === C.faturaAberta(c, S.hoje) ? ' (aberta)' : ''}</option>`).join('')}
     </select>
@@ -552,14 +573,18 @@ function vPessoas() {
       ${sit[it.situacao] || ''}<div class="valor">${brl(it.pago ? it.valor : it.falta)}</div><span class="seta" aria-hidden="true">${icon('chev')}</span></li>`;
   };
   return `
+  <section class="hero">
+    <div class="hero-rot">Falta receber</div>
+    <div class="hero-val num">${brl(tot)}</div>
+    <div class="hero-linhas">
+      <div><span>Atrasado</span><b class="num">${brl(atr)}</b></div>
+      <div><span>Parcelas futuras</span><b class="num">${brl(fut)}</b></div>
+      <div><span>Pessoas devendo</span><b class="num">${pessoas.filter((p) => p.falta > 0).length}</b></div>
+    </div>
+  </section>
   ${cobr.length ? `<section class="card"><div class="card-h"><h2>Cobrar agora</h2><span class="tiny muted">${d.config?.diasAntesCobranca ?? 2} dias antes do vencimento, ou atrasados</span></div>
-    <ul class="lista">${cobr.map((cb) => { const u = ultimaCobranca(cb.pessoa, cb.cartao); return `<li><div class="desc"><b>${esc(nome(cb.pessoa))}</b><small>${esc(cartao(cb.cartao).nome)} · ${cb.itens.length} ite${cb.itens.length > 1 ? 'ns' : 'm'}${u ? ` · cobrado em ${diaMes(u)}` : ''}</small></div><div class="valor">${brl(cb.total)}</div><button class="btn sm pri" data-act="cobrar" data-arg="${cb.pessoa}|${cb.cartao}">${icon('chat')} Cobrar</button></li>`; }).join('')}</ul></section>` : ''}
-  <div class="grid g4">
-    <div class="card kpi"><div class="rot">Falta receber</div><div class="val">${brl(tot)}</div></div>
-    <div class="card kpi"><div class="rot">Atrasado</div><div class="val">${brl(atr)}</div></div>
-    <div class="card kpi"><div class="rot">Parcelas futuras</div><div class="val">${brl(fut)}</div><div class="sub">ainda não lançadas</div></div>
-    <div class="card kpi"><div class="rot">Pessoas devendo</div><div class="val">${pessoas.filter((p) => p.falta > 0).length}</div></div>
-  </div>
+    <ul class="lista">${cobr.map((cb) => { const u = ultimaCobranca(cb.pessoa, cb.cartao); return `<li>${avatar(cb.pessoa)}<div class="desc"><b>${esc(nome(cb.pessoa))}</b><small>${esc(cartao(cb.cartao).nome)} · ${cb.itens.length} ite${cb.itens.length > 1 ? 'ns' : 'm'}${u ? ` · cobrado em ${diaMes(u)}` : ''}</small></div><div class="valor">${brl(cb.total)}</div><button class="btn sm pri" data-act="cobrar" data-arg="${cb.pessoa}|${cb.cartao}">${icon('chat')} Cobrar</button></li>`; }).join('')}</ul></section>` : ''}
+
   <div class="row"><button class="btn" data-act="pessoa-form">${icon('plus')} Pessoa</button><span class="tiny muted grow">Toque no nome para ver as compras. Toque numa compra para abrir e mudar quanto a pessoa deve; o quadradinho marca como pago.</span></div>
   ${pessoas.map((p) => {
     const aberto = S.abertos.has(p.pessoa.id);
@@ -569,7 +594,7 @@ function vPessoas() {
     const cartoesPend = [...new Set(pend.map((i) => i.cartao))];
     return `<section class="card" id="p-${p.pessoa.id}">
       <div class="spread click" data-act="toggle-pessoa" data-arg="${p.pessoa.id}" style="cursor:pointer">
-        <div class="grow"><h2>${esc(p.pessoa.nome)}</h2><div class="tiny muted">${p.futuro > 0 ? `+ ${brl(p.futuro)} futuro · ` : ''}já pagou ${brl(p.pago)}${p.pessoa.telefone ? '' : ' · sem WhatsApp cadastrado'}</div></div>
+        ${avatar(p.pessoa.id)}<div class="grow"><h2>${esc(p.pessoa.nome)}</h2><div class="tiny muted">${p.futuro > 0 ? `+ ${brl(p.futuro)} futuro · ` : ''}já pagou ${brl(p.pago)}${p.pessoa.telefone ? '' : ' · sem WhatsApp cadastrado'}</div></div>
         ${p.atrasado > 0 ? '<span class="tag bad">atrasado</span>' : ''}
         <div class="valor num" style="font-size:18px;font-weight:680">${brl(p.falta)}</div>
       </div>
@@ -596,6 +621,7 @@ function devedoresGrupo(g) {
   }));
 }
 // Cor fixa por pessoa, alternando tons de vinho.
+const avatar = (pid) => `<span class="av" style="--c:${corPessoa(pid)}" aria-hidden="true">${esc((nome(pid) || '?').trim().charAt(0).toUpperCase())}</span>`;
 const corPessoa = (pid) => `var(--p${(Math.max(0, S.dados.pessoas.findIndex((p) => p.id === pid)) % 4) + 1})`;
 function liDevedor(x, sub) {
   const pct = x.devido ? Math.min(100, (x.pago / x.devido) * 100) : 0;
@@ -1756,7 +1782,8 @@ arquivoJson.addEventListener('change', async () => {
 });
 
 const ACOES = {
-  nav: (a) => { S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
+  mais: () => modalMais(),
+  nav: (a) => { fecharModal(); S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
   'fechar-modal': () => fecharModal(),
   'recarregar-pagina': () => location.reload(),
   importar: (a) => { cartaoImport = a || null; arquivo.click(); },
