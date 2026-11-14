@@ -317,3 +317,93 @@ export function parseTextoLancamentos(texto, hoje) {
   if (atual && atual.desc.length && !atual.semValor) ignoradas.push(`${atual.data} ${atual.desc.join(' ')}`);
   return { linhas: out, ignoradas };
 }
+
+// ---------------- Planilha .xlsx (fatura aberta baixada do site do Itaú) ----------------
+// Lê o .xlsx no próprio aparelho, sem biblioteca: o arquivo é um zip com XML dentro.
+async function lerZip(buf) {
+  const dv = new DataView(buf); const u8 = new Uint8Array(buf);
+  let fim = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) if (dv.getUint32(i, true) === 0x06054b50) { fim = i; break; }
+  if (fim < 0) throw new Error('Arquivo .xlsx inválido.');
+  const n = dv.getUint16(fim + 10, true); let p = dv.getUint32(fim + 16, true);
+  const dec = new TextDecoder(); const arqs = {};
+  for (let k = 0; k < n; k++) {
+    const metodo = dv.getUint16(p + 10, true); const tam = dv.getUint32(p + 20, true);
+    const ln = dv.getUint16(p + 28, true); const le = dv.getUint16(p + 30, true); const lc = dv.getUint16(p + 32, true);
+    const loc = dv.getUint32(p + 42, true); const nome = dec.decode(u8.subarray(p + 46, p + 46 + ln));
+    const ini = loc + 30 + dv.getUint16(loc + 26, true) + dv.getUint16(loc + 28, true);
+    arqs[nome] = { metodo, dados: u8.subarray(ini, ini + tam) };
+    p += 46 + ln + le + lc;
+  }
+  return async (nome) => {
+    const a = arqs[nome]; if (!a) return null;
+    if (a.metodo === 0) return dec.decode(a.dados);
+    const s = new Blob([a.dados]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(s).text();
+  };
+}
+const desXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, c) => String.fromCharCode(c)).replace(/&amp;/g, '&');
+const colunaN = (ref) => [...ref.replace(/\d+/g, '')].reduce((s, ch) => s * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+
+// Devolve as linhas da primeira planilha como matriz de valores (texto ou número).
+async function linhasXlsx(buf) {
+  const ler = await lerZip(buf);
+  const ss = await ler('xl/sharedStrings.xml');
+  const compart = ss ? [...ss.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => desXml([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join(''))) : [];
+  const sheet = (await ler('xl/worksheets/sheet1.xml')) || '';
+  const rows = [];
+  for (const r of sheet.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+    const linha = [];
+    for (const c of r[1].matchAll(/<c ([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const ref = (c[1].match(/r="([A-Z]+\d+)"/) || [])[1]; if (!ref) continue;
+      const t = (c[1].match(/t="(\w+)"/) || [])[1]; const corpo = c[2] || '';
+      const v = (corpo.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+      let val = null;
+      if (t === 's') val = compart[Number(v)] ?? null;
+      else if (t === 'inlineStr') val = desXml([...corpo.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((x) => x[1]).join(''));
+      else if (t === 'str' || t === 'b') val = v != null ? desXml(v) : null;
+      else if (v != null) val = Number(v);
+      linha[colunaN(ref)] = val;
+    }
+    rows.push(linha);
+  }
+  return rows;
+}
+const semAcento = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+// Data em número de série do Excel ou em texto dd/mm/aaaa.
+function dataCelula(v) {
+  if (typeof v === 'number' && v > 20000 && v < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000); return d.toISOString().slice(0, 10); }
+  const m = String(v ?? '').match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
+export async function parseXlsxFatura(buf) {
+  const rows = await linhasXlsx(buf);
+  let cab = -1; let col = {};
+  let vencimento = null; let totalParcial = null; let nomeCartao = '';
+  rows.forEach((r, i) => {
+    r.forEach((v, j) => {
+      const t = semAcento(v);
+      if (t === 'vencimento' && rows[i + 1]) vencimento = dataCelula(rows[i + 1][j]) || vencimento;
+      if (t.startsWith('valor (parcial)') || t === 'valor total' || t === 'total da fatura') { const n = rows[i + 1]?.[j]; if (typeof n === 'number') totalParcial = n; }
+      if (t === 'cartao' && rows[i + 1]) nomeCartao = String(rows[i + 1][j] ?? '');
+    });
+    if (cab < 0) {
+      const idx = (nome) => r.findIndex((v) => semAcento(v) === nome);
+      if (idx('data') >= 0 && idx('lancamento') >= 0 && idx('valor') >= 0) { cab = i; col = { data: idx('data'), desc: idx('lancamento'), valor: idx('valor'), parc: idx('parcelamento') }; }
+    }
+  });
+  if (cab < 0) throw new Error('Não encontrei a tabela de lançamentos (colunas Data, Lançamento e Valor) nessa planilha.');
+  const linhas = []; const ignoradas = [];
+  for (const r of rows.slice(cab + 1)) {
+    const data = dataCelula(r[col.data]); const desc = String(r[col.desc] ?? '').replace(/\s+/g, ' ').trim();
+    const valor = typeof r[col.valor] === 'number' ? round2(r[col.valor]) : parseValor(r[col.valor]);
+    if (!data || !desc || !Number.isFinite(valor) || valor === 0) { const txt = r.filter((x) => x != null && x !== '').join(' '); if (txt && data) ignoradas.push(txt); continue; }
+    const mp = String(r[col.parc] ?? '').match(/(\d+)\s*(?:de|\/)\s*(\d+)/i);
+    const parcela = mp ? { n: Number(mp[1]), total: Number(mp[2]) } : detectaParcela(desc);
+    const tipo = valor < 0 && /^pagamento/i.test(desc) ? 'pagamento' : tipoPorValor(desc, valor);
+    linhas.push({ data, desc, valor, tipo, parcela });
+  }
+  const banco = /ita[uú]/i.test(nomeCartao) ? 'itau' : /nubank/i.test(nomeCartao) ? 'nubank' : /mercado ?pago/i.test(nomeCartao) ? 'mercadopago' : null;
+  return { banco, vencimento, totalParcial, linhas, ignoradas };
+}
