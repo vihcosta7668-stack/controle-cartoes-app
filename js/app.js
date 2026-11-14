@@ -284,14 +284,20 @@ function resolverConflitoComp() {
 
 // ======================= estrutura =======================
 const NAV = [
-  ['resumo', 'Resumo', 'home'], ['faturas', 'Faturas', 'card'], ['pessoas', 'Me devem', 'people'], ['grupos', 'Grupos', 'group'], ['futuro', 'Futuro', 'chart'],
+  ['resumo', 'Início', 'home'], ['faturas', 'Faturas', 'card'], ['pessoas', 'Me devem', 'people'], ['grupos', 'Grupos', 'group'], ['futuro', 'Futuro', 'chart'],
   ['casa', 'Casa', 'obra'], ['viagens', 'Viagens', 'aviao'],
 ];
+// No celular a barra de baixo tem 4 telas + "Mais"; as outras abrem num painel.
+const NAV_BAIXO = ['resumo', 'faturas', 'pessoas', 'futuro'];
+const NAV_MAIS = [...NAV.filter(([id]) => !NAV_BAIXO.includes(id)), ['ajustes', 'Ajustes', 'gear']];
+function modalMais() {
+  abrirModal(`${cabecalhoModal('Mais')}<div class="mais-grid">${NAV_MAIS.map(([id, nomeT, ic]) => `<button class="mais-item" data-act="nav" data-arg="${id}" ${S.view === id ? 'aria-current="page"' : ''}><span class="circ">${icon(ic)}</span>${nomeT}</button>`).join('')}</div>`);
+}
 function render() {
   if (!S.dados) return;
   const cobr = C.cobrancasDevidas(S.dados, S.hoje, S.dados.config?.diasAntesCobranca ?? 2).length;
   const views = { resumo: vResumo, faturas: vFaturas, pessoas: vPessoas, grupos: vGrupos, futuro: vFuturo, casa: vCasa, viagens: vViagens, ajustes: vAjustes };
-  const titulo = { resumo: 'Resumo', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', casa: 'Nossa casa', viagens: 'Viagens', ajustes: 'Ajustes' }[S.view];
+  const titulo = { resumo: 'Início', faturas: 'Faturas', pessoas: 'Me devem', grupos: 'Compras em grupo', futuro: 'Parcelas e próximos meses', casa: 'Nossa casa', viagens: 'Viagens', ajustes: 'Ajustes' }[S.view];
   const navBtn = ([id, nome, ic]) => `<button data-act="nav" data-arg="${id}" ${S.view === id ? 'aria-current="page"' : ''}>${icon(ic)}<span>${nome}</span>${id === 'pessoas' && cobr ? `<span class="badge-dot">${cobr}</span>` : ''}</button>`;
   const y = window.scrollY;
   app.innerHTML = `<div class="shell">
@@ -302,14 +308,14 @@ function render() {
       <button data-act="nav" data-arg="ajustes" ${S.view === 'ajustes' ? 'aria-current="page"' : ''}>${icon('gear')}<span>Ajustes</span></button>
     </nav>
     <div>
-      <header class="topbar">
-        <div class="titulo"><h1>${titulo}</h1><small>Hoje, ${dataBR(S.hoje)}</small></div>
+      <header class="topbar${S.view === 'resumo' ? ' inicio' : ''}">
+        <div class="titulo"><h1>${S.view === 'resumo' ? 'Olá!' : titulo}</h1><small>${S.view === 'resumo' ? 'Hoje é' : 'Hoje,'} ${dataBR(S.hoje)}</small></div>
         <span class="sync"></span>
         <button class="btn icone ghost so-mobile" data-act="nav" data-arg="ajustes" aria-label="Ajustes">${icon('gear')}</button>
       </header>
       <main class="pilha">${views[S.view]()}</main>
     </div>
-    <nav class="nav ${NAV.length > 5 ? 'n7' : ''}" style="--nav-n:${NAV.length}" aria-label="Menu">${NAV.map(navBtn).join('')}</nav>
+    <nav class="nav" style="--nav-n:${NAV_BAIXO.length + 1}" aria-label="Menu">${NAV.filter(([id]) => NAV_BAIXO.includes(id)).map(navBtn).join('')}<button data-act="mais" ${NAV_BAIXO.includes(S.view) ? '' : 'aria-current="page"'}>${icon('grid')}<span>Mais</span></button></nav>
   </div>`;
   atualizarSync(); ligarGraficos(app);
   if (S.manterScroll) window.scrollTo(0, y); S.manterScroll = false;
@@ -368,26 +374,37 @@ function vResumo() {
   const atrasado = pessoas.reduce((s, p) => s + p.atrasado, 0);
   const meses = C.previsaoMeses(d, S.hoje, 6);
   return `
-  ${salarioHTML()}
+  <section class="hero">
+    <div class="hero-rot">Sua parte nas faturas abertas</div>
+    <div class="hero-val num">${brl(minha)}</div>
+    <div class="hero-linhas">
+      <div><span>Total nas faturas</span><b class="num">${brl(tot)}</b></div>
+      <div><span>Falta receber</span><b class="num">${brl(receber)}</b>${atrasado > 0 ? `<em>${brl(atrasado)} atrasado</em>` : ''}</div>
+      <div><span>Falta pagar aos bancos</span><b class="num">${brl(faltaBancos)}</b></div>
+    </div>
+    <div class="atalhos">
+      <button data-act="importar"><span class="circ">${icon('upload')}</span>Importar</button>
+      <button data-act="colar"><span class="circ">${icon('copy')}</span>Colar</button>
+      <button data-act="novo-lanc"><span class="circ">${icon('plus')}</span>Lançar</button>
+      <button data-act="nav" data-arg="pessoas"><span class="circ">${icon('chat')}${cobr.length ? `<i class="badge-dot">${cobr.length}</i>` : ''}</span>Cobrar</button>
+      <button data-act="nav" data-arg="futuro"><span class="circ">${icon('chart')}</span>Futuro</button>
+    </div>
+  </section>
   ${cobr.length ? `<div class="alerta warn"><div class="grow"><b>${cobr.length} cobrança${cobr.length > 1 ? 's' : ''} para fazer</b><br><span class="small">${esc(cobr.map((c) => nome(c.pessoa)).slice(0, 5).join(', '))}${cobr.length > 5 ? '…' : ''}</span></div><button class="btn sm" data-act="nav" data-arg="pessoas">Ver</button></div>` : ''}
-  <div class="grid g4">
-    <div class="card kpi"><div class="rot">Faturas abertas</div><div class="val">${brl(tot)}</div><div class="sub">${res.map((x) => `${esc(x.c.nome)} ${brl(x.r.totalGeral)}`).join(' · ')}</div></div>
-    <div class="card kpi"><div class="rot">Minha parte</div><div class="val">${brl(minha)}</div><div class="sub">dos outros ${brl(tot - minha)}</div></div>
-    <div class="card kpi"><div class="rot">Falta pagar aos bancos</div><div class="val">${brl(faltaBancos)}</div><div class="sub">inclui fatura fechada sem pagamento</div></div>
-    <div class="card kpi"><div class="rot">Falta receber</div><div class="val">${brl(receber)}</div><div class="sub">${atrasado > 0 ? `<span class="tag bad">${brl(atrasado)} atrasado</span>` : 'nada atrasado'}</div></div>
+  <div>
+    <div class="secao-h"><h2>Meus cartões</h2><button class="btn sm ghost" data-act="nav" data-arg="faturas">Faturas ${icon('chev')}</button></div>
+    <div class="cartoes">${res.map(({ c, r }) => `
+      <button class="cartao-fis" style="--cor:${esc(c.cor || '#8f8d87')}" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">
+        <span class="cf-topo"><span class="cf-nome"><i></i>${esc(c.nome)}</span>${conferenciaTag(r)}</span>
+        <span class="cf-rot">Fatura atual</span>
+        <span class="cf-val num">${brl(r.totalGeral)}</span>
+        <span class="cf-sub">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)}</span>
+        <span class="cf-barra">${barraMinha(r.minha, r.outros)}</span>
+        <span class="cf-sub">sua parte <b class="num">${brl(r.minha)}</b> · dos outros <b class="num">${brl(r.outros)}</b></span>
+      </button>`).join('')}</div>
+    ${res.flatMap(({ c, abertas }) => abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">${esc(c.nome)}, fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`)).join('')}
   </div>
-  <div class="grid g2m">
-    ${res.map(({ c, r, abertas }) => `
-    <section class="card">
-      <div class="card-h">${chipCartao(c)}<span class="small muted">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)} (${diaMes(r.venc)})</span></div>
-      <div class="spread"><div><div class="kpi" style="padding:0"><div class="val">${brl(r.totalGeral)}</div>
-        <div class="sub">lançado ${brl(r.total)}${r.totalPrevisto > 0 ? ` · previsto ${brl(r.totalPrevisto)}` : ''}</div></div></div>
-        ${conferenciaTag(r)}</div>
-      <div style="margin:12px 0 8px">${barraMinha(r.minha, r.outros)}</div>${legenda(r.minha, r.outros)}
-      ${abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">Fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`).join('')}
-      <div class="row wrap" style="margin-top:14px"><button class="btn sm" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">Ver fatura</button><button class="btn sm" data-act="importar" data-arg="${c.id}">${icon('upload')} Importar</button><button class="btn sm" data-act="colar" data-arg="${c.id}">${icon('copy')} Colar</button><button class="btn sm" data-act="novo-lanc" data-arg="${c.id}">${icon('plus')} Lançar</button></div>
-    </section>`).join('')}
-  </div>
+  ${salarioHTML()}
   <section class="card">
     <div class="card-h"><h2>Próximos 6 meses</h2>${legenda(meses.reduce((s, m) => s + m.minha, 0), meses.reduce((s, m) => s + m.outros, 0))}</div>
     ${graficoBarras(meses, { largura: larguraGrafico() })}
@@ -1756,7 +1773,8 @@ arquivoJson.addEventListener('change', async () => {
 });
 
 const ACOES = {
-  nav: (a) => { S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
+  mais: () => modalMais(),
+  nav: (a) => { fecharModal(); S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
   'fechar-modal': () => fecharModal(),
   'recarregar-pagina': () => location.reload(),
   importar: (a) => { cartaoImport = a || null; arquivo.click(); },
