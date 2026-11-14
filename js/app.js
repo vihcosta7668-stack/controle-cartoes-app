@@ -318,6 +318,8 @@ function render() {
     <nav class="nav" style="--nav-n:${NAV_BAIXO.length + 1}" aria-label="Menu">${NAV.filter(([id]) => NAV_BAIXO.includes(id)).map(navBtn).join('')}<button data-act="mais" ${NAV_BAIXO.includes(S.view) ? '' : 'aria-current="page"'}>${icon('grid')}<span>Mais</span></button></nav>
   </div>`;
   atualizarSync(); ligarGraficos(app);
+  const sel = app.querySelector('.cartoes.mini [aria-pressed="true"]'); // cartão escolhido em Faturas fica à vista
+  if (sel) sel.parentElement.scrollLeft = sel.offsetLeft - sel.parentElement.offsetLeft - 16;
   if (S.manterScroll) window.scrollTo(0, y); S.manterScroll = false;
 }
 
@@ -346,6 +348,16 @@ const quando = (venc) => {
   const d = difDias(S.hoje, venc);
   return d === 0 ? 'vence hoje' : d === 1 ? 'vence amanhã' : d > 0 ? `vence em ${d} dias` : `venceu há ${-d} dia${d === -1 ? '' : 's'}`;
 };
+// Cartão desenhado na cor do cartão de verdade: chip, nome do banco no canto e tarja com a sua parte.
+function cartaoFis(c, r, { act = 'ver-fatura', arg = `${c.id}|${r.venc}`, sel = null, rotulo = 'Fatura atual' } = {}) {
+  return `<button class="cartao-fis${sel === false ? ' apagado' : ''}" style="--cor:${esc(c.cor || '#5f6168')}" data-act="${act}" data-arg="${esc(arg)}" ${sel != null ? `aria-pressed="${sel}"` : ''}>
+    <span class="cf-topo"><span class="cf-rot">${rotulo}</span><span class="cf-chip" aria-hidden="true"></span></span>
+    <span class="cf-val num">${brl(r.totalGeral)}</span>
+    <span class="cf-sub">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)}</span>
+    <span class="cf-base"><span class="cf-marca">${esc(c.nome.toLowerCase())}</span>${conferenciaTag(r)}</span>
+    <span class="cf-tarja">${barraMinha(r.minha, r.outros)}<span>sua parte <b class="num">${brl(r.minha)}</b> · dos outros <b class="num">${brl(r.outros)}</b></span></span>
+  </button>`;
+}
 function faturasEmAberto(c) { // fechadas sem pagamento completo (últimos 3 meses)
   const ab = C.faturaAberta(c, S.hoje);
   const out = [];
@@ -393,15 +405,7 @@ function vResumo() {
   ${cobr.length ? `<div class="alerta warn"><div class="grow"><b>${cobr.length} cobrança${cobr.length > 1 ? 's' : ''} para fazer</b><br><span class="small">${esc(cobr.map((c) => nome(c.pessoa)).slice(0, 5).join(', '))}${cobr.length > 5 ? '…' : ''}</span></div><button class="btn sm" data-act="nav" data-arg="pessoas">Ver</button></div>` : ''}
   <div>
     <div class="secao-h"><h2>Meus cartões</h2><button class="btn sm ghost" data-act="nav" data-arg="faturas">Faturas ${icon('chev')}</button></div>
-    <div class="cartoes">${res.map(({ c, r }) => `
-      <button class="cartao-fis" style="--cor:${esc(c.cor || '#8f8d87')}" data-act="ver-fatura" data-arg="${c.id}|${r.venc}">
-        <span class="cf-topo"><span class="cf-nome"><i></i>${esc(c.nome)}</span>${conferenciaTag(r)}</span>
-        <span class="cf-rot">Fatura atual</span>
-        <span class="cf-val num">${brl(r.totalGeral)}</span>
-        <span class="cf-sub">fecha ${diaMes(r.fechamento)} · ${quando(r.venc)}</span>
-        <span class="cf-barra">${barraMinha(r.minha, r.outros)}</span>
-        <span class="cf-sub">sua parte <b class="num">${brl(r.minha)}</b> · dos outros <b class="num">${brl(r.outros)}</b></span>
-      </button>`).join('')}</div>
+    <div class="cartoes">${res.map(({ c, r }) => cartaoFis(c, r)).join('')}</div>
     ${res.flatMap(({ c, abertas }) => abertas.map((a) => `<div class="alerta bad" style="margin-top:12px"><div class="grow small">${esc(c.nome)}, fatura de ${dataBR(a.venc)}: <b>${brl(a.faltaPagar)}</b> sem pagamento registrado.</div><button class="btn sm" data-act="marcar-paga" data-arg="${c.id}|${a.venc}">Já paguei</button></div>`)).join('')}
   </div>
   ${salarioHTML()}
@@ -498,8 +502,8 @@ function vFaturas() {
       <div class="valor">${brl(l.valor)}${Math.abs(minha - l.valor) > 0.004 ? `<small>minha ${brl(minha)}</small>` : ''}</div></li>`;
   };
   return `
+  <div class="cartoes mini" role="group" aria-label="Cartão">${d.cartoes.map((x) => cartaoFis(x, x.id === c.id ? r : C.resumoFatura(d, x.id, C.faturaAberta(x, S.hoje), S.hoje), { act: 'fat-cartao', arg: x.id, sel: x.id === c.id, rotulo: x.id === c.id && r.venc !== C.faturaAberta(x, S.hoje) ? `Fatura de ${dataBR(r.venc)}` : 'Fatura atual' })).join('')}</div>
   <div class="row wrap">
-    <div class="seg" role="group" aria-label="Cartão">${d.cartoes.map((x) => `<button data-act="fat-cartao" data-arg="${x.id}" aria-pressed="${x.id === c.id}">${esc(x.nome)}</button>`).join('')}</div>
     <select class="inp" style="width:auto;flex:1;min-width:190px" data-chg="fat-venc" aria-label="Fatura">
       ${vencs.map((v) => `<option value="${v}" ${v === r.venc ? 'selected' : ''}>Vence ${dataBR(v)}${v === C.faturaAberta(c, S.hoje) ? ' (aberta)' : ''}</option>`).join('')}
     </select>
@@ -569,14 +573,18 @@ function vPessoas() {
       ${sit[it.situacao] || ''}<div class="valor">${brl(it.pago ? it.valor : it.falta)}</div><span class="seta" aria-hidden="true">${icon('chev')}</span></li>`;
   };
   return `
+  <section class="hero">
+    <div class="hero-rot">Falta receber</div>
+    <div class="hero-val num">${brl(tot)}</div>
+    <div class="hero-linhas">
+      <div><span>Atrasado</span><b class="num">${brl(atr)}</b></div>
+      <div><span>Parcelas futuras</span><b class="num">${brl(fut)}</b></div>
+      <div><span>Pessoas devendo</span><b class="num">${pessoas.filter((p) => p.falta > 0).length}</b></div>
+    </div>
+  </section>
   ${cobr.length ? `<section class="card"><div class="card-h"><h2>Cobrar agora</h2><span class="tiny muted">${d.config?.diasAntesCobranca ?? 2} dias antes do vencimento, ou atrasados</span></div>
-    <ul class="lista">${cobr.map((cb) => { const u = ultimaCobranca(cb.pessoa, cb.cartao); return `<li><div class="desc"><b>${esc(nome(cb.pessoa))}</b><small>${esc(cartao(cb.cartao).nome)} · ${cb.itens.length} ite${cb.itens.length > 1 ? 'ns' : 'm'}${u ? ` · cobrado em ${diaMes(u)}` : ''}</small></div><div class="valor">${brl(cb.total)}</div><button class="btn sm pri" data-act="cobrar" data-arg="${cb.pessoa}|${cb.cartao}">${icon('chat')} Cobrar</button></li>`; }).join('')}</ul></section>` : ''}
-  <div class="grid g4">
-    <div class="card kpi"><div class="rot">Falta receber</div><div class="val">${brl(tot)}</div></div>
-    <div class="card kpi"><div class="rot">Atrasado</div><div class="val">${brl(atr)}</div></div>
-    <div class="card kpi"><div class="rot">Parcelas futuras</div><div class="val">${brl(fut)}</div><div class="sub">ainda não lançadas</div></div>
-    <div class="card kpi"><div class="rot">Pessoas devendo</div><div class="val">${pessoas.filter((p) => p.falta > 0).length}</div></div>
-  </div>
+    <ul class="lista">${cobr.map((cb) => { const u = ultimaCobranca(cb.pessoa, cb.cartao); return `<li>${avatar(cb.pessoa)}<div class="desc"><b>${esc(nome(cb.pessoa))}</b><small>${esc(cartao(cb.cartao).nome)} · ${cb.itens.length} ite${cb.itens.length > 1 ? 'ns' : 'm'}${u ? ` · cobrado em ${diaMes(u)}` : ''}</small></div><div class="valor">${brl(cb.total)}</div><button class="btn sm pri" data-act="cobrar" data-arg="${cb.pessoa}|${cb.cartao}">${icon('chat')} Cobrar</button></li>`; }).join('')}</ul></section>` : ''}
+
   <div class="row"><button class="btn" data-act="pessoa-form">${icon('plus')} Pessoa</button><span class="tiny muted grow">Toque no nome para ver as compras. Toque numa compra para abrir e mudar quanto a pessoa deve; o quadradinho marca como pago.</span></div>
   ${pessoas.map((p) => {
     const aberto = S.abertos.has(p.pessoa.id);
@@ -586,7 +594,7 @@ function vPessoas() {
     const cartoesPend = [...new Set(pend.map((i) => i.cartao))];
     return `<section class="card" id="p-${p.pessoa.id}">
       <div class="spread click" data-act="toggle-pessoa" data-arg="${p.pessoa.id}" style="cursor:pointer">
-        <div class="grow"><h2>${esc(p.pessoa.nome)}</h2><div class="tiny muted">${p.futuro > 0 ? `+ ${brl(p.futuro)} futuro · ` : ''}já pagou ${brl(p.pago)}${p.pessoa.telefone ? '' : ' · sem WhatsApp cadastrado'}</div></div>
+        ${avatar(p.pessoa.id)}<div class="grow"><h2>${esc(p.pessoa.nome)}</h2><div class="tiny muted">${p.futuro > 0 ? `+ ${brl(p.futuro)} futuro · ` : ''}já pagou ${brl(p.pago)}${p.pessoa.telefone ? '' : ' · sem WhatsApp cadastrado'}</div></div>
         ${p.atrasado > 0 ? '<span class="tag bad">atrasado</span>' : ''}
         <div class="valor num" style="font-size:18px;font-weight:680">${brl(p.falta)}</div>
       </div>
@@ -613,6 +621,7 @@ function devedoresGrupo(g) {
   }));
 }
 // Cor fixa por pessoa, alternando tons de vinho.
+const avatar = (pid) => `<span class="av" style="--c:${corPessoa(pid)}" aria-hidden="true">${esc((nome(pid) || '?').trim().charAt(0).toUpperCase())}</span>`;
 const corPessoa = (pid) => `var(--p${(Math.max(0, S.dados.pessoas.findIndex((p) => p.id === pid)) % 4) + 1})`;
 function liDevedor(x, sub) {
   const pct = x.devido ? Math.min(100, (x.pago / x.devido) * 100) : 0;
