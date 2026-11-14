@@ -2,16 +2,29 @@
 
 App web (PWA) para acompanhar faturas do Nubank, do Itaú e do Mercado Pago, quem me deve, compras em grupo, o que já está comprometido nos próximos meses, a obra da casa e as viagens do casal. Funciona no navegador do notebook e do celular (pode ser instalado na tela inicial).
 
-Este repositório é **público e só contém código**. Os dados ficam em um repositório **privado** separado (`controle-cartoes-dados`), lidos e gravados pela API do GitHub com um token que só tem acesso a ele.
+Este repositório é **público e só contém código**. Os dados ficam num banco SQL (Postgres) no seu projeto do **Supabase**, com Row Level Security: cada linha tem dono e só quem entrou com aquela conta enxerga ou altera.
 
 ## Quem vê o quê
 
 | Dado | Onde fica | Quem acessa |
 |---|---|---|
-| Faturas, cartões, renda, contas fixas, quem me deve | `controle-cartoes-dados` (privado, na conta pessoal de cada um) | só o dono |
-| Casa (etapas, pagamentos, saldo guardado de cada um) e viagens | `casa-viagens-dados` (privado, na conta de um dos dois, com o outro como colaborador) | os dois |
+| Faturas, cartões, renda, contas fixas, quem me deve | tabelas `pessoal`, `cartoes`, `faturas`, `lancamentos`, `divisoes`, `pessoas`, `regras`, `grupos`, `grupo_participantes`, `grupo_pagamentos`, `cobrancas` | só o dono da conta |
+| Casa (etapas, pagamentos, saldo guardado de cada um) e viagens | tabelas `espacos`, `membros`, `etapas`, `etapa_pagamentos`, `saldos`, `viagens`, `viagem_itens` | quem entrou no espaço do casal (`espaco_usuarios`) |
 
-Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal. O token fine-grained só enxerga repositórios do próprio dono e não funciona para colaborador; por isso quem é colaborador do repositório compartilhado usa um token clássico.
+O esquema completo está em `supabase/schema.sql`. Campos que o app venha a criar e que ainda não têm coluna própria ficam na coluna `extra` (jsonb) da linha, para nada se perder.
+
+## Configurar o Supabase (uma vez)
+
+1. Crie um projeto em supabase.com.
+2. *SQL Editor → New query*: cole o conteúdo de `supabase/schema.sql` e rode. Pode rodar de novo depois de atualizar o app; ele só cria o que falta e troca as funções.
+3. *Authentication → Users → Add user*: crie o seu usuário com e-mail e senha (e o da outra pessoa, se forem usar casa e viagens). Marque *Auto Confirm User*.
+4. *Authentication → Sign In / Providers*: desligue *Allow new users to sign up*, para ninguém mais criar conta no seu projeto.
+5. *Project Settings → API*: copie o endereço do projeto (`https://xxxx.supabase.co`) e a chave **anon** (pública). A chave `service_role` nunca vai no app.
+6. No app: endereço, chave anon, e-mail, senha e um PIN para este aparelho.
+
+### Trazer os dados da versão com GitHub
+
+No primeiro acesso, o app oferece *Importar dados.json*. Baixe o `dados.json` do repositório `controle-cartoes-dados` (ou use *Baixar cópia* na versão antiga) e escolha o arquivo. Para casa e viagens, em *Ajustes → Casa e viagens → Criar o espaço*, escolha o `compartilhado.json` do repositório `casa-viagens-dados`.
 
 ## Publicar
 
@@ -22,27 +35,29 @@ Cada pessoa usa o mesmo endereço do app, com o próprio repositório pessoal. O
 ## Segurança
 
 - Nenhum dado financeiro, nome ou chave Pix está neste repositório.
-- O app recusa conectar a um repositório de dados público.
-- O token (fine-grained, só o repositório de dados, permissão *Contents: Read and write*) fica no aparelho cifrado com AES-GCM; a chave vem do seu PIN (PBKDF2, 310 mil iterações). Sem o PIN, o que está salvo no navegador não abre.
-- O app trava depois de 10 minutos em segundo plano, a não ser que o aparelho esteja marcado como *Manter conectado* (opção na tela do PIN e em Ajustes). Nesse caso a chave derivada do PIN fica no IndexedDB do navegador como chave não exportável: o token continua cifrado, mas quem abrir o app nesse aparelho entra sem PIN. *Bloquear agora* desliga a opção e volta a pedir o PIN.
+- RLS em todas as tabelas: dados pessoais só com `dono = auth.uid()`; casa e viagens só para quem está em `espaco_usuarios`. A chave anon sozinha não lê nada.
+- A sessão do Supabase (refresh token) fica no aparelho cifrada com AES-GCM; a chave vem do seu PIN (PBKDF2, 310 mil iterações). Sem o PIN, o que está salvo no navegador não abre.
+- O app trava depois de 10 minutos em segundo plano, a não ser que o aparelho esteja marcado como *Manter conectado* (opção na tela do PIN e em Ajustes). Nesse caso a chave derivada do PIN fica no IndexedDB do navegador como chave não exportável: a sessão continua cifrada, mas quem abrir o app nesse aparelho entra sem PIN. *Bloquear agora* desliga a opção e volta a pedir o PIN.
 - CSV e PDF são lidos no próprio aparelho (pdf.js incluído em `vendor/`, sem CDN). Da fatura do Itaú só são extraídos os lançamentos; CPF, endereço e código de barras são ignorados.
-- Política de segurança (CSP) só permite conexão com `api.github.com`; nenhum script de terceiros.
-- Se perder o aparelho: revogue o token em *GitHub → Settings → Developer settings → Personal access tokens* e gere outro.
+- Política de segurança (CSP) só permite conexão com `*.supabase.co`; nenhum script de terceiros.
+- Gravações usam a coluna `revisao`: se outro aparelho salvou antes, o Supabase recusa (409) e o app pergunta qual versão manter, sem sobrescrever às cegas.
+- Se perder o aparelho: em *Authentication → Users*, troque a senha do usuário ou use *Sign out user* para derrubar as sessões.
 
 ## Casa e viagens (uma vez)
 
-1. Na sua conta, crie o repositório **privado** `casa-viagens-dados` (pode ser vazio; o app cria o `compartilhado.json`).
-2. *Settings → Collaborators → Add people* → convide a outra pessoa. Ela precisa aceitar o convite (e-mail ou github.com/notifications).
-3. Tokens:
-   - Dono do repositório: edite o token fine-grained que o app já usa (*Settings → Developer settings → Fine-grained tokens*) e acrescente `casa-viagens-dados` em *Repository access*. O mesmo token serve para os dois campos.
-   - Colaborador: crie um token **clássico** (*Personal access tokens → Tokens (classic) → Generate new token*) com o escopo `repo` e uma data de validade. Esse tipo de token alcança todos os repositórios privados da conta dele; fica no aparelho cifrado pelo PIN, mas se vazar, revogue na hora.
-4. No app: *Ajustes → Casa e viagens* → dono do repositório (o seu usuário), repositório, token, seu nome e o PIN deste aparelho. Use sempre o mesmo nome; é por ele que o app sabe quem você é.
+1. Os dois precisam de usuário no mesmo projeto do Supabase (passo 3 acima).
+2. Um de vocês: *Ajustes → Casa e viagens* → seu nome → *Criar o espaço* (opcionalmente importando o `compartilhado.json`). O app mostra um código de 8 caracteres.
+3. O outro: entra no app com a própria conta → *Ajustes → Casa e viagens* → seu nome → *Entrar com código*.
 
-Quando os dois editam ao mesmo tempo, o app baixa a versão do outro, reaplica a sua alteração e salva de novo.
+Use sempre o mesmo nome; é por ele que o app sabe quem você é. Quando os dois editam ao mesmo tempo, o app baixa a versão do outro, reaplica a sua alteração e salva de novo.
+
+## Lembrete diário de cobranças
+
+O script `scripts/cobrancas.mjs` do repositório de dados lê do Supabase quando recebe `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (chave `service_role` ou `sb_secret_…`, só nos secrets do GitHub Actions) e `SUPABASE_USER_ID` (o UID do seu usuário em *Authentication → Users*). A função `pessoal_de` só aceita a chave de serviço.
 
 ## Como funciona "cabe no bolso"
 
-Para cada mês: renda − contas fixas fora do cartão − o que você separa para a casa − sua parte das faturas (parcelas e fixos já conhecidos; no mês atual, também a fatura que já fechou) − sua parte dos gastos de viagem ainda não comprados. Gasto no seu cartão cai no mês do vencimento pelo ciclo do cartão; no cartão do outro, a sua parte começa no mês seguinte à compra; Pix/débito no mês da compra. Abaixo da margem fica amarelo; negativo, vermelho. Renda e faturas não saem do seu repositório.
+Para cada mês: renda − contas fixas fora do cartão − o que você separa para a casa − sua parte das faturas (parcelas e fixos já conhecidos; no mês atual, também a fatura que já fechou) − sua parte dos gastos de viagem ainda não comprados. Gasto no seu cartão cai no mês do vencimento pelo ciclo do cartão; no cartão do outro, a sua parte começa no mês seguinte à compra; Pix/débito no mês da compra. Abaixo da margem fica amarelo; negativo, vermelho. Renda e faturas não saem das suas tabelas.
 
 Ao marcar um gasto de viagem como comprado no cartão, o app lança a 1ª parcela na sua fatura (com a parte do outro em "Me devem"). Quando a fatura do banco for importada, esse lançamento é trocado pelo do banco se o valor bater e a data tiver até 3 dias de diferença; se não bater, a importação avisa e você apaga o duplicado.
 
@@ -68,7 +83,8 @@ Em *Ajustes → Renda e compromissos* ficam os dois pagamentos do mês (adiantam
 | `js/importer.js` | junta a fatura importada com os dados existentes |
 | `js/calc.js` | faturas, previsões, quem me deve, grupos, cobranças |
 | `js/pix.js` | Pix copia e cola (BR Code) com valor |
-| `js/store.js` | GitHub + cifra do token (um para o repositório pessoal, outro para o compartilhado) |
+| `js/store.js` | login no Supabase, chamadas às funções SQL e cifra da sessão pelo PIN |
+| `supabase/schema.sql` | tabelas, RLS e funções `carregar_*`/`salvar_*` |
 | `js/app.js`, `js/ui.js`, `css/app.css` | interface |
 
 Ao alterar `calc.js`, `util.js` ou `pix.js`, copie também para `scripts/lib/` do repositório de dados (o lembrete diário usa os mesmos cálculos).

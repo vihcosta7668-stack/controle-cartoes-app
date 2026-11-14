@@ -1,4 +1,4 @@
-import { Store, ErroConflito, CHAVES_COMPARTILHADO } from './store.js';
+import { Sessao, Store, StoreComp, ErroConflito, ErroLogin } from './store.js';
 import {
   hoje as hojeISO, brl, num, dataBR, diaMes, mesCurto, difDias, addMeses, round2, cents, parseValor,
   detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
@@ -10,12 +10,13 @@ import { importarFatura, classificarNovo } from './importer.js';
 import { esc, icon, toast, abrirModal, fecharModal, cabecalhoModal, chipCartao, graficoBarras, ligarGraficos } from './ui.js';
 
 const EU = C.EU;
+const sessao = new Sessao(); // login do Supabase, um só para os dados pessoais e para casa e viagens
 const S = {
-  store: new Store(), dados: null, view: 'resumo', hoje: hojeISO(),
+  store: new Store(sessao), dados: null, view: 'resumo', hoje: hojeISO(),
   fat: { cartao: null, venc: null, filtro: 'todos' }, abertos: new Set(), verPagos: new Set(), grupoSel: null,
   sync: 'ok', timer: null, msgSalvar: '', ocultoEm: null,
-  // casa e viagens: arquivo compartilhado num repositório à parte, com token próprio (mesmo PIN)
-  comp: { store: new Store(CHAVES_COMPARTILHADO), dados: null, sync: 'ok', timer: null, fila: [], msg: '', erro: '' },
+  // casa e viagens: espaço do casal no Supabase, que as duas contas acessam
+  comp: { store: new StoreComp(sessao), dados: null, sync: 'ok', timer: null, fila: [], msg: '', erro: '' },
   viagemSel: null,
 };
 const app = document.getElementById('app');
@@ -24,7 +25,7 @@ const app = document.getElementById('app');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) S.ocultoEm = Date.now();
-  else if (!S.lembrado && S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; fecharModal(); telaPin(); }
+  else if (!S.lembrado && S.ocultoEm && Date.now() - S.ocultoEm > 10 * 60 * 1000 && S.store.desbloqueado) { sessao.bloquear(); S.comp.dados = null; S.dados = null; fecharModal(); telaPin(); }
   else if (S.dados) { const h = hojeISO(); if (h !== S.hoje) { S.hoje = h; render(); } carregarComp(); }
 });
 window.addEventListener('online', () => { if (S.sync === 'pendente') salvarAgora(); if (S.comp.sync === 'pendente') salvarComp(); });
@@ -34,15 +35,13 @@ if (!S.store.configurado) telaConfig(); else abrirSemPin();
 
 // Aparelho marcado para manter conectado: abre direto; senão, pede o PIN.
 async function abrirSemPin() {
-  if (!(await S.store.desbloquearSalvo())) return telaPin();
+  if (!(await sessao.desbloquearSalvo())) return telaPin();
   S.lembrado = true;
-  if (S.comp.store.configurado) await S.comp.store.desbloquearSalvo();
   await carregarDados();
 }
 async function manterConectado(sim) {
   S.lembrado = sim;
-  if (sim) { await S.store.lembrar(); if (S.comp.store.desbloqueado) await S.comp.store.lembrar(); }
-  else { await S.store.esquecer(); await S.comp.store.esquecer(); }
+  if (sim) await sessao.lembrar(); else await sessao.esquecer();
 }
 
 // Cartões que o app sabe ler. Fechamento/vencimento são o ponto de partida; cada um ajusta em Ajustes.
@@ -63,66 +62,48 @@ function dadosVazios(ids = ['nubank', 'itau']) {
 
 // ======================= acesso =======================
 function telaConfig(erro = '') {
+  const cfg = sessao.cfg || {};
   app.innerHTML = `<div class="acesso pilha">
     <div class="logo">${icon('card')}</div>
-    <h1>Conectar ao seu repositório de dados</h1>
-    <p>O app guarda tudo num arquivo <b>dados.json</b> dentro de um repositório <b>privado</b> do seu GitHub. Este aparelho só guarda o acesso, cifrado com o seu PIN.</p>
+    <h1>Entrar no Controle de Cartões</h1>
+    <p>Seus dados ficam num banco SQL no seu projeto do <b>Supabase</b>, e cada linha só é visível para quem entrou com a conta dona dela. Este aparelho só guarda a sessão, cifrada com o seu PIN.</p>
     <ol class="passos">
-      <li>Crie (ou use) o repositório privado de dados, ex.: <code>controle-cartoes-dados</code>.</li>
-      <li>Gere um token em <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">GitHub → Fine-grained token</a>: <i>Only select repositories</i> → só o repositório de dados; <i>Permissions → Contents: Read and write</i>.</li>
-      <li>Cole abaixo e escolha um PIN (mín. 6 dígitos/letras) para abrir o app neste aparelho.</li>
+      <li>No Supabase, rode o arquivo <code>supabase/schema.sql</code> deste app no <i>SQL Editor</i> (uma vez por projeto).</li>
+      <li>Em <i>Authentication → Users → Add user</i>, crie o seu usuário (e o da outra pessoa, se forem usar casa e viagens).</li>
+      <li>Em <i>Project Settings → API</i>, copie o endereço do projeto e a chave <i>anon</i> (pública).</li>
     </ol>
     <form class="form card" id="f-config" autocomplete="off">
+      <label class="campo"><span>Endereço do projeto</span><input class="inp" name="url" required placeholder="https://xxxx.supabase.co" value="${esc(cfg.url || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></label>
+      <label class="campo"><span>Chave anon (pública)</span><input class="inp" name="chave" required value="${esc(cfg.chave || '')}" autocapitalize="off" spellcheck="false"></label>
       <div class="lado">
-        <label class="campo"><span>Usuário do GitHub</span><input class="inp" name="owner" required autocapitalize="off" spellcheck="false"></label>
-        <label class="campo"><span>Repositório (privado)</span><input class="inp" name="repo" required value="controle-cartoes-dados" autocapitalize="off" spellcheck="false"></label>
+        <label class="campo"><span>E-mail</span><input class="inp" name="email" type="email" required autocapitalize="off" spellcheck="false" autocomplete="username"></label>
+        <label class="campo"><span>Senha</span><input class="inp" name="senha" type="password" required autocomplete="current-password"></label>
       </div>
-      <label class="campo"><span>Token (github_pat_…)</span><input class="inp" name="token" type="password" required autocapitalize="off" spellcheck="false"></label>
       <div class="lado">
         <label class="campo"><span>PIN deste aparelho</span><input class="inp" name="pin" type="password" inputmode="numeric" minlength="6" required></label>
         <label class="campo"><span>Repita o PIN</span><input class="inp" name="pin2" type="password" inputmode="numeric" minlength="6" required></label>
       </div>
-      <details class="small"${erro && /compartilhad|casa/i.test(erro) ? ' open' : ''}><summary class="muted">Casa e viagens (repositório compartilhado do casal — opcional)</summary>
-        <p class="tiny muted">Fica num repositório privado à parte, que vocês dois acessam (o outro entra como colaborador).</p>
-        <div class="lado" style="margin-top:10px">
-          <label class="campo"><span>Dono do repositório (usuário)</span><input class="inp" name="comp_owner" autocapitalize="off" spellcheck="false"></label>
-          <label class="campo"><span>Repositório</span><input class="inp" name="comp_repo" value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label>
-        </div>
-        <label class="campo"><span>Token com acesso a esse repositório</span><input class="inp" name="comp_token" type="password" autocapitalize="off" spellcheck="false"></label>
-        <label class="campo"><span>Seu nome (como o outro vai te ver)</span><input class="inp" name="comp_nome"></label>
-      </details>
-      <details class="small"><summary class="muted">Avançado</summary>
-        <div class="lado" style="margin-top:10px">
-          <label class="campo"><span>Branch</span><input class="inp" name="branch" value="main"></label>
-          <label class="campo"><span>Arquivo</span><input class="inp" name="path" value="dados.json"></label>
-        </div>
-      </details>
       ${erro ? `<div class="erro-txt">${esc(erro)}</div>` : ''}
       ${caixaManter}
-      <button class="btn pri" type="submit">Conectar</button>
+      <button class="btn pri" type="submit">Entrar</button>
     </form>
   </div>`;
   document.getElementById('f-config').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     if (f.pin !== f.pin2) return telaConfig('Os PINs não são iguais.');
-    const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Conectando…';
-    try { await S.store.configurar(f); } catch (err) { S.store.sair(); return telaConfig(err.message); }
-    if (f.comp_owner?.trim() || f.comp_token?.trim()) {
-      try { await configurarComp({ owner: f.comp_owner, repo: f.comp_repo, token: f.comp_token, nome: f.comp_nome, pin: f.pin }); }
-      catch (err) { S.store.sair(); S.comp.store.sair(); return telaConfig(`Casa e viagens: ${err.message}`); }
-    }
+    const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Entrando…';
+    try { await sessao.entrar(f); } catch (err) { sessao.sair(); return telaConfig(err.message); }
     await manterConectado(f.manter === 'on');
     await carregarDados();
   });
 }
 
 function telaPin(erro = '') {
-  const cfg = S.store.cfg || {};
   app.innerHTML = `<div class="acesso pilha">
     <div class="logo">${icon('lock')}</div>
     <h1>Controle de Cartões</h1>
-    <p class="small muted">Dados em ${esc(cfg.owner)}/${esc(cfg.repo)}</p>
+    <p class="small muted">${esc(sessao.usuario?.email || '')}</p>
     <form class="form card" id="f-pin" autocomplete="off">
       <label class="campo"><span>PIN</span><input class="inp" name="pin" type="password" inputmode="numeric" autofocus required></label>
       ${erro ? `<div class="erro-txt">${esc(erro)}</div>` : ''}
@@ -136,13 +117,12 @@ function telaPin(erro = '') {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Abrindo…';
-    try { await S.store.desbloquear(f.pin.value); } catch (err) { return telaPin(err.message); }
-    if (S.comp.store.configurado) { try { await S.comp.store.desbloquear(f.pin.value); } catch { toast('Casa e viagens: o PIN deste aparelho não abriu o acesso compartilhado. Reconecte em Ajustes.', 5000); } }
+    try { await sessao.desbloquear(f.pin.value); } catch (err) { return telaPin(err.message); }
     await manterConectado(f.manter.checked);
     await carregarDados();
   });
   document.getElementById('b-esqueci').addEventListener('click', () => {
-    if (confirm('Isso apaga o acesso salvo neste aparelho (os dados no GitHub não são afetados). Continuar?')) { S.store.sair(); S.comp.store.sair(); telaConfig(); }
+    if (confirm('Isso apaga o acesso salvo neste aparelho (os dados no Supabase não são afetados). Continuar?')) { S.comp.store.sair(); sessao.sair(); telaConfig(); }
   });
 }
 
@@ -150,7 +130,7 @@ async function carregarDados() {
   app.innerHTML = '<div class="boot">Buscando seus dados…</div>';
   const cache = await S.store.lerCache();
   if (cache?.pendente) { // alterações feitas offline ainda não enviadas
-    S.dados = cache.dados; S.store.sha = cache.sha; S.sync = 'pendente';
+    S.dados = cache.dados; S.store.revisao = cache.revisao ?? null; S.sync = 'pendente';
     render(); salvarAgora();
     return;
   }
@@ -158,15 +138,17 @@ async function carregarDados() {
     const { dados } = await S.store.carregar();
     if (!dados) {
       S.dados = dadosVazios(); render();
-      abrirModal(`${cabecalhoModal('Primeiro acesso')}<p>Não encontrei <b>${esc(S.store.cfg.path)}</b> no repositório. Vou criar um arquivo novo, vazio. Quais cartões você usa?</p>
+      abrirModal(`${cabecalhoModal('Primeiro acesso')}<p>Ainda não há dados desta conta no Supabase.</p>
+        <p class="small">Se você já usava o app com o GitHub, importe o <b>dados.json</b> (baixe do repositório <i>controle-cartoes-dados</i> ou use "Baixar cópia" na versão antiga). Tudo vai para as tabelas, inclusive o que já foi marcado como pago.</p>
+        <div class="row wrap"><button class="btn pri" data-act="importar-json" data-arg="pessoal">Importar dados.json</button></div>
+        <p class="small" style="margin-top:16px">Ou comece do zero. Quais cartões você usa?</p>
         <div class="pilha">${Object.values(CARTOES_MODELO).map((c) => `<label class="check"><input type="checkbox" data-novo-cartao="${c.id}" ${c.id !== 'mercadopago' ? 'checked' : ''}> ${esc(c.nome)} <span class="tiny muted">(fatura em ${formatoFatura(c)})</span></label>`).join('')}</div>
-        <p class="small muted">Se você tem o dados.json inicial que veio com o app, suba ele no repositório antes e toque em Recarregar.</p>
-        <div class="modal-f"><button class="btn" data-act="recarregar">Recarregar</button><button class="btn pri" data-act="criar-dados">Criar arquivo</button></div>`);
+        <div class="modal-f"><button class="btn" data-act="recarregar">Recarregar</button><button class="btn" data-act="criar-dados">Começar do zero</button></div>`);
       return;
     }
     S.dados = migrar(dados); S.sync = 'ok';
   } catch (err) {
-    if (cache?.dados) { S.dados = cache.dados; S.sync = 'erro'; toast('Sem conexão com o GitHub — mostrando a última cópia deste aparelho.', 4000); }
+    if (cache?.dados) { S.dados = cache.dados; S.sync = 'erro'; toast(err instanceof ErroLogin ? err.message : 'Sem conexão com o Supabase — mostrando a última cópia deste aparelho.', 5000); }
     else { app.innerHTML = `<div class="acesso"><p class="erro-txt">${esc(err.message)}</p><button class="btn" data-act="recarregar-pagina">Tentar de novo</button></div>`; return; }
   }
   render();
@@ -193,18 +175,18 @@ async function salvarAgora() {
     S.sync = 'ok';
   } catch (err) {
     if (err instanceof ErroConflito) { S.sync = 'erro'; resolverConflito(); }
-    else { S.sync = 'pendente'; await S.store.marcarPendente(S.dados); toast('Não consegui salvar no GitHub. Fica guardado aqui e envio quando a conexão voltar.', 4000); }
+    else { S.sync = 'pendente'; await S.store.marcarPendente(S.dados); toast(err instanceof ErroLogin ? err.message : 'Não consegui salvar no Supabase. Fica guardado aqui e envio quando a conexão voltar.', 5000); }
   }
   atualizarSync();
 }
 function resolverConflito() {
   abrirModal(`${cabecalhoModal('Dados alterados em outro aparelho')}
-    <p>O arquivo no GitHub mudou depois que este aparelho abriu (provavelmente você mexeu pelo celular e pelo notebook ao mesmo tempo).</p>
+    <p>Os dados no Supabase mudaram depois que este aparelho abriu (provavelmente você mexeu pelo celular e pelo notebook ao mesmo tempo).</p>
     <div class="modal-f">
-      <button class="btn" data-act="conflito-github">Usar os do GitHub</button>
+      <button class="btn" data-act="conflito-github">Usar os do Supabase</button>
       <button class="btn pri" data-act="conflito-local">Manter os daqui</button>
     </div>
-    <p class="tiny muted">"Usar os do GitHub" descarta a última alteração feita aqui. "Manter os daqui" sobrescreve o que foi feito no outro aparelho.</p>`);
+    <p class="tiny muted">"Usar os do Supabase" descarta a última alteração feita aqui. "Manter os daqui" sobrescreve o que foi feito no outro aparelho.</p>`);
 }
 function atualizarSync() {
   const el = document.querySelector('.sync'); if (!el) return;
@@ -214,14 +196,19 @@ function atualizarSync() {
 }
 
 // ======================= casa e viagens: sincronização =======================
-// O arquivo compartilhado é editado pelos dois. Cada alteração é guardada como função (fila):
+// O espaço do casal é editado pelos dois. Cada alteração é guardada como função (fila):
 // se o outro salvou antes, o app baixa a versão nova, reaplica a fila e tenta de novo.
 const euId = () => slug(S.comp.store.cfg?.eu || '');
 
-async function configurarComp({ owner, repo, token, nome, pin }) {
-  if (!String(nome || '').trim()) throw new Error('Informe seu nome.');
-  if (!String(owner || '').trim() || !String(token || '').trim()) throw new Error('Informe o dono do repositório e o token.');
-  await S.comp.store.configurar({ owner, repo: repo || 'casa-viagens-dados', path: 'compartilhado.json', token, pin, extra: { eu: String(nome).trim() } });
+async function configurarComp({ nome, codigo, arquivo }) {
+  let dadosIniciais = null;
+  if (!codigo) {
+    if (arquivo && arquivo.size) {
+      try { dadosIniciais = PL.migrarCompartilhado(JSON.parse(await arquivo.text())); } catch { throw new Error('Não consegui ler esse arquivo. Use o compartilhado.json do repositório casa-viagens-dados.'); }
+      if (!Array.isArray(dadosIniciais.membros) || !Array.isArray(dadosIniciais.viagens)) throw new Error('Esse arquivo não parece ser o compartilhado.json.');
+    } else dadosIniciais = PL.compartilhadoVazio(String(nome || '').trim() || 'Eu');
+  }
+  await S.comp.store.conectar({ nome, codigo, dadosIniciais });
 }
 
 async function carregarComp({ forcar = false } = {}) {
@@ -230,15 +217,11 @@ async function carregarComp({ forcar = false } = {}) {
   if (!forcar && (c.fila.length || c.sync === 'salvando' || c.sync === 'pendente')) return;
   if (!c.dados) {
     const cache = await st.lerCache();
-    if (cache?.pendente) { c.dados = PL.migrarCompartilhado(cache.dados); st.sha = cache.sha; c.sync = 'pendente'; redesenhar(); salvarComp(); return; }
+    if (cache?.pendente) { c.dados = PL.migrarCompartilhado(cache.dados); st.revisao = cache.revisao ?? null; c.sync = 'pendente'; redesenhar(); salvarComp(); return; }
   }
   try {
     const { dados } = await st.carregar();
     c.erro = '';
-    if (!dados) { // primeiro acesso: cria o arquivo com as etapas padrão da obra
-      c.dados = PL.compartilhadoVazio(st.cfg.eu); st.sha = null; c.msg = 'app: compartilhado.json criado'; c.sync = 'salvando';
-      redesenhar(); await salvarComp(); return;
-    }
     const mudou = !c.dados || c.dados.atualizadoEm !== dados.atualizadoEm;
     c.dados = PL.migrarCompartilhado(dados); c.sync = 'ok';
     if (!PL.membroPorId(c.dados, euId())) mutarComp((dd) => { if (!PL.membroPorId(dd, euId())) dd.membros.push({ id: euId(), nome: st.cfg.eu }); }, 'app: novo membro');
@@ -276,14 +259,14 @@ async function salvarComp() {
         if (err instanceof ErroConflito && c.fila.length && tentativa < 4) {
           try {
             const { dados } = await c.store.carregar();
-            const base = PL.migrarCompartilhado(dados || PL.compartilhadoVazio(c.store.cfg.eu));
+            const base = PL.migrarCompartilhado(dados);
             for (const fn of c.fila) fn(base);
             c.dados = base;
             continue;
           } catch { /* sem conexão: fica pendente */ }
         }
         if (err instanceof ErroConflito && !c.fila.length) { c.sync = 'erro'; resolverConflitoComp(); }
-        else { c.sync = 'pendente'; await c.store.marcarPendente(c.dados); toast('Casa e viagens: não consegui salvar no GitHub. Fica guardado aqui e envio quando a conexão voltar.', 4000); }
+        else { c.sync = 'pendente'; await c.store.marcarPendente(c.dados); toast(err instanceof ErroLogin ? err.message : 'Casa e viagens: não consegui salvar no Supabase. Fica guardado aqui e envio quando a conexão voltar.', 5000); }
         break;
       }
     }
@@ -292,9 +275,9 @@ async function salvarComp() {
 }
 function resolverConflitoComp() {
   abrirModal(`${cabecalhoModal('Casa e viagens mudaram em outro aparelho')}
-    <p>Este aparelho tem alterações feitas sem internet, e o arquivo compartilhado também foi alterado (por você em outro aparelho ou pela outra pessoa).</p>
-    <div class="modal-f"><button class="btn" data-act="comp-usar-github">Usar os do GitHub</button><button class="btn pri" data-act="comp-manter-local">Manter os daqui</button></div>
-    <p class="tiny muted">"Usar os do GitHub" descarta o que foi feito aqui sem internet. "Manter os daqui" sobrescreve o que foi feito lá.</p>`);
+    <p>Este aparelho tem alterações feitas sem internet, e casa e viagens também foram alteradas (por você em outro aparelho ou pela outra pessoa).</p>
+    <div class="modal-f"><button class="btn" data-act="comp-usar-github">Usar os do Supabase</button><button class="btn pri" data-act="comp-manter-local">Manter os daqui</button></div>
+    <p class="tiny muted">"Usar os do Supabase" descarta o que foi feito aqui sem internet. "Manter os daqui" sobrescreve o que foi feito lá.</p>`);
 }
 
 // ======================= estrutura =======================
@@ -745,11 +728,10 @@ function vFuturo() {
 function compIndisponivel() {
   const c = S.comp;
   if (!c.store.configurado) {
-    return `<div class="card pilha"><h2>Casa e viagens ficam num arquivo do casal</h2>
-      <p class="small" style="margin:6px 0 0">As faturas continuam só suas. Casa e viagens ficam num repositório à parte, que vocês dois acessam, cada um com o próprio token.</p>
+    return `<div class="card pilha"><h2>Casa e viagens ficam no espaço do casal</h2>
+      <p class="small" style="margin:6px 0 0">As faturas continuam só suas. Casa e viagens ficam num espaço à parte no Supabase, que vocês dois acessam, cada um com o próprio login.</p>
       <button class="btn pri" data-act="nav" data-arg="ajustes">Conectar em Ajustes</button></div>`;
   }
-  if (!c.store.desbloqueado) return '<div class="card vazio">O PIN deste aparelho não abriu o acesso a casa e viagens. Reconecte em Ajustes.</div>';
   if (!c.dados) {
     return c.erro ? `<div class="card pilha"><p class="erro-txt">${esc(c.erro)}</p><button class="btn" data-act="comp-recarregar">${icon('refresh')} Tentar de novo</button></div>`
       : '<div class="card vazio">Buscando casa e viagens…</div>';
@@ -883,7 +865,7 @@ function vViagem(v) {
 
 // ======================= AJUSTES =======================
 function vAjustes() {
-  const d = S.dados; const cfg = S.store.cfg || {};
+  const d = S.dados;
   const tiposPix = [['cpf', 'CPF'], ['cnpj', 'CNPJ'], ['telefone', 'Telefone'], ['email', 'E-mail'], ['aleatoria', 'Aleatória']];
   const orc = d.orcamento || {};
   const cc = S.comp.store;
@@ -891,7 +873,7 @@ function vAjustes() {
   return `
   <section class="card form">
     <h2>Renda e compromissos <span class="tag">só você vê</span></h2>
-    <p class="small muted" style="margin:0">Usados no quadro "Salário x faturas" do Resumo e para dizer se uma viagem ou compra parcelada cabe no seu mês. Ficam no seu repositório, não no do casal.</p>
+    <p class="small muted" style="margin:0">Usados no quadro "Salário x faturas" do Resumo e para dizer se uma viagem ou compra parcelada cabe no seu mês. Ficam nas suas tabelas, não no espaço do casal.</p>
     <div class="small" style="font-weight:600;margin-top:4px">Salário (recebo de 15 em 15 dias)</div>
     <p class="tiny muted" style="margin:-6px 0 0">Informe o que cai na conta em cada pagamento, já sem INSS, refeição, plano de saúde e os outros descontos do holerite.</p>
     ${PL.PAGAMENTOS.map(([k, rotulo]) => { const p = orc.salario?.[k] || {}; return `<div class="lado tres">
@@ -907,15 +889,15 @@ function vAjustes() {
   </section>
   <section class="card pilha">
     <h2>Casa e viagens (compartilhado)</h2>
-    ${cc.configurado ? `<p class="small" style="margin:6px 0 0">Conectado a <b>${esc(cc.cfg.owner)}/${esc(cc.cfg.repo)}</b> como <b>${esc(cc.cfg.eu)}</b>.${S.comp.erro ? ` <span class="erro-txt">${esc(S.comp.erro)}</span>` : ''}</p>
+    ${cc.configurado ? `<p class="small" style="margin:6px 0 0">Conectado ao espaço do casal como <b>${esc(cc.cfg.eu)}</b>.${S.comp.erro ? ` <span class="erro-txt">${esc(S.comp.erro)}</span>` : ''}</p>
+      ${cc.cfg.codigo ? `<p class="small" style="margin:0">Código para a outra pessoa entrar: <b class="num">${esc(cc.cfg.codigo)}</b></p>` : ''}
       <div class="row wrap"><button class="btn" data-act="comp-recarregar">${icon('refresh')} Atualizar agora</button><button class="btn perigo" data-act="comp-sair">Desconectar casa e viagens</button></div>`
-    : `<p class="small muted" style="margin:6px 0 0">Para os dois verem e editarem casa e viagens, o arquivo fica num repositório privado à parte, na sua conta ou na do outro, com o outro como colaborador. Quem é dono do repositório usa um token fine-grained que inclua esse repositório (Contents: Read and write); o colaborador usa um token clássico com o escopo repo.</p>
+    : `<p class="small muted" style="margin:6px 0 0">Casa e viagens ficam num espaço do casal no Supabase. Um de vocês cria o espaço e passa o código; o outro entra com o próprio login e esse código.</p>
       <form class="form" id="f-comp" autocomplete="off">
-        <div class="lado"><label class="campo"><span>Dono do repositório (usuário)</span><input class="inp" name="owner" required autocapitalize="off" spellcheck="false"></label>
-        <label class="campo"><span>Repositório (privado)</span><input class="inp" name="repo" required value="casa-viagens-dados" autocapitalize="off" spellcheck="false"></label></div>
-        <label class="campo"><span>Token com acesso a esse repositório</span><input class="inp" name="token" type="password" required autocapitalize="off" spellcheck="false"></label>
-        <div class="lado"><label class="campo"><span>Seu nome</span><input class="inp" name="nome" required></label>
-        <label class="campo"><span>PIN deste aparelho</span><input class="inp" name="pin" type="password" inputmode="numeric" required></label></div>
+        <label class="campo"><span>Seu nome (como o outro vai te ver)</span><input class="inp" name="nome" required></label>
+        <div class="seg" role="radiogroup"><label class="check small" style="padding:6px 10px"><input type="radio" name="modo" value="criar" checked> Criar o espaço</label><label class="check small" style="padding:6px 10px"><input type="radio" name="modo" value="entrar"> Entrar com código</label></div>
+        <label class="campo"><span>Código (só para entrar)</span><input class="inp" name="codigo" autocapitalize="characters" spellcheck="false" placeholder="ex.: 4F2A9C1B"></label>
+        <label class="campo"><span>Importar compartilhado.json (opcional, só ao criar)</span><input class="inp" name="arquivo" type="file" accept=".json,application/json"></label>
         <button class="btn pri" type="submit">Conectar</button>
       </form>`}
   </section>
@@ -950,19 +932,19 @@ function vAjustes() {
   <section class="card form">
     <h2>Cobrança</h2>
     <label class="campo"><span>Cobrar quantos dias antes do vencimento</span><input class="inp" type="number" min="0" max="10" data-chg="dias-cobranca" value="${d.config?.diasAntesCobranca ?? 2}"></label>
-    <p class="tiny muted" style="margin:0">O lembrete automático diário (GitHub Actions no repositório de dados) usa esse mesmo número.</p>
+    <p class="tiny muted" style="margin:0">O lembrete automático diário (GitHub Actions, lendo do Supabase) usa esse mesmo número.</p>
   </section>
   <section class="card pilha">
     <h2>Dados e segurança</h2>
-    <p class="small" style="margin:6px 0 0">Conectado a <b>${esc(cfg.owner)}/${esc(cfg.repo)}</b> (${esc(cfg.path)}, branch ${esc(cfg.branch)}). Última gravação: ${d.atualizadoEm ? new Date(d.atualizadoEm).toLocaleString('pt-BR') : '—'}.</p>
+    <p class="small" style="margin:6px 0 0">Conectado ao Supabase como <b>${esc(sessao.usuario?.email || '')}</b> (${esc((sessao.cfg?.url || '').replace('https://', ''))}). Última gravação: ${d.atualizadoEm ? new Date(d.atualizadoEm).toLocaleString('pt-BR') : '—'}.</p>
     <div class="row wrap">
-      <button class="btn" data-act="recarregar">${icon('refresh')} Recarregar do GitHub</button>
+      <button class="btn" data-act="recarregar">${icon('refresh')} Recarregar do Supabase</button>
       <button class="btn" data-act="backup">Baixar cópia (.json)</button>
       <button class="btn" data-act="bloquear">${icon('lock')} Bloquear agora</button>
       ${S.lembrado ? '<button class="btn" data-act="manter-nao">Pedir o PIN ao abrir</button>' : '<button class="btn" data-act="manter-sim">Manter conectado neste aparelho</button>'}
       <button class="btn perigo" data-act="sair">Desconectar este aparelho</button>
     </div>
-    <p class="tiny muted" style="margin:0">PDFs e CSVs são lidos aqui no aparelho; só os lançamentos vão para o GitHub (CPF, endereço e código de barras da fatura são ignorados). ${S.lembrado ? 'Este aparelho está mantido conectado: abre sem PIN e não trava sozinho. "Bloquear agora" volta a pedir o PIN.' : 'O app trava sozinho depois de 10 minutos em segundo plano.'}</p>
+    <p class="tiny muted" style="margin:0">PDFs e CSVs são lidos aqui no aparelho; só os lançamentos vão para o Supabase (CPF, endereço e código de barras da fatura são ignorados). ${S.lembrado ? 'Este aparelho está mantido conectado: abre sem PIN e não trava sozinho. "Bloquear agora" volta a pedir o PIN.' : 'O app trava sozinho depois de 10 minutos em segundo plano.'}</p>
   </section>`;
 }
 
@@ -1758,6 +1740,18 @@ async function iniciarImport(file, cartaoPref) {
 const arquivo = document.getElementById('arquivo');
 let cartaoImport = null;
 arquivo.addEventListener('change', () => { const f = arquivo.files[0]; arquivo.value = ''; if (f) iniciarImport(f, cartaoImport); });
+// dados.json da versão com GitHub: vira as tabelas no Supabase.
+const arquivoJson = document.getElementById('arquivo-json');
+arquivoJson.addEventListener('change', async () => {
+  const f = arquivoJson.files[0]; arquivoJson.value = ''; if (!f) return;
+  let d;
+  try { d = JSON.parse(await f.text()); } catch { return toast('Não consegui ler esse arquivo.'); }
+  if (!d || !Array.isArray(d.lancamentos) || !Array.isArray(d.cartoes) || !Array.isArray(d.pessoas)) return toast('Esse arquivo não parece ser o dados.json do app.', 4000);
+  if (!confirm(`Importar ${d.lancamentos.length} lançamentos, ${d.cartoes.length} cartões e ${d.pessoas.length} pessoas para o Supabase?`)) return;
+  fecharModal(); S.dados = migrar(d); S.store.revisao = null; S.msgSalvar = 'app: dados importados';
+  S.sync = 'salvando'; render(); await salvarAgora(); render(); carregarComp();
+  if (S.sync === 'ok') toast('Dados importados.');
+});
 
 const ACOES = {
   nav: (a) => { S.view = a; if (a !== 'grupos') S.grupoSel = null; if (a !== 'viagens') S.viagemSel = null; render(); window.scrollTo(0, 0); },
@@ -1789,11 +1783,12 @@ const ACOES = {
   'regra-nova': () => mutar((dd) => { dd.regras.push({ id: uid('r'), contem: 'texto da fatura', pessoa: EU, modo: 'inteiro', fixo: false }); }, 'app: regra criada'),
   'regra-apagar': (a) => mutar((dd) => { dd.regras = dd.regras.filter((r) => r.id !== a); }, 'app: regra apagada'),
   recarregar: async () => { fecharModal(); S.dados = null; await carregarDados(); toast('Dados recarregados.'); },
+  'importar-json': () => arquivoJson.click(),
   'criar-dados': async () => {
     const ids = [...document.querySelectorAll('[data-novo-cartao]:checked')].map((x) => x.dataset.novoCartao);
     if (!ids.length) return toast('Escolha pelo menos um cartão.');
     S.dados = dadosVazios(ids);
-    fecharModal(); S.store.sha = null; S.msgSalvar = 'app: dados.json criado'; await salvarAgora(); render(); },
+    fecharModal(); S.store.revisao = null; S.msgSalvar = 'app: dados criados'; await salvarAgora(); render(); carregarComp(); },
   'conflito-github': async () => { fecharModal(); S.dados = null; await carregarDados(); },
   'conflito-local': async () => {
     fecharModal();
@@ -1820,15 +1815,15 @@ const ACOES = {
   'viagem-voltar': () => { S.viagemSel = null; render(); },
   'item-form': (a) => { const [vid, iid, cat] = a.split('|'); modalItem(vid, iid || null, cat || null); },
   'comp-recarregar': async () => { S.comp.erro = ''; await carregarComp({ forcar: S.comp.sync !== 'pendente' }); if (!S.comp.erro) toast('Casa e viagens atualizadas.'); },
-  'comp-sair': () => { if (confirm('Desconectar casa e viagens deste aparelho? O arquivo no GitHub continua lá.')) { S.comp.store.sair(); S.comp.dados = null; S.comp.fila = []; render(); } },
-  'comp-usar-github': async () => { fecharModal(); S.comp.dados = null; S.comp.fila = []; S.comp.sync = 'ok'; await S.comp.store.gravarCache({ dados: null, sha: null, pendente: false }); await carregarComp({ forcar: true }); },
+  'comp-sair': () => { if (confirm('Desconectar casa e viagens deste aparelho? O espaço do casal continua no Supabase e você pode entrar de novo com o código.')) { S.comp.store.sair(); S.comp.dados = null; S.comp.fila = []; render(); } },
+  'comp-usar-github': async () => { fecharModal(); S.comp.dados = null; S.comp.fila = []; S.comp.sync = 'ok'; await S.comp.store.gravarCache({ dados: null, revisao: null, pendente: false }); await carregarComp({ forcar: true }); },
   'comp-manter-local': async () => { fecharModal(); try { await S.comp.store.carregar(); } catch { /* segue */ } S.comp.msg = 'app: mantidos os dados deste aparelho'; await salvarComp(); },
   'cartao-add': (a) => { if (!CARTOES_MODELO[a]) return; mutar((dd) => { if (!dd.cartoes.some((c) => c.id === a)) dd.cartoes.push(structuredClone(CARTOES_MODELO[a])); }, 'app: cartão adicionado'); },
   'cartao-remover': (a) => { if (confirm('Remover este cartão?')) mutar((dd) => { dd.cartoes = dd.cartoes.filter((c) => c.id !== a); }, 'app: cartão removido'); },
   'manter-sim': async () => { await manterConectado(true); S.manterScroll = true; render(); toast('Este aparelho vai abrir sem pedir o PIN.'); },
   'manter-nao': async () => { await manterConectado(false); S.manterScroll = true; render(); toast('O PIN volta a ser pedido ao abrir.'); },
-  bloquear: async () => { await manterConectado(false); S.store.bloquear(); S.comp.store.bloquear(); S.comp.dados = null; S.dados = null; telaPin(); },
-  sair: () => { if (confirm('Desconectar este aparelho? Você vai precisar do token de novo. Os dados no GitHub continuam lá.')) { S.store.sair(); S.comp.store.sair(); S.comp.dados = null; S.dados = null; telaConfig(); } },
+  bloquear: async () => { await manterConectado(false); sessao.bloquear(); S.comp.dados = null; S.dados = null; telaPin(); },
+  sair: () => { if (confirm('Desconectar este aparelho? Você vai precisar do e-mail e da senha de novo. Os dados no Supabase continuam lá.')) { S.comp.store.sair(); sessao.sair(); S.comp.dados = null; S.dados = null; telaConfig(); } },
 };
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
@@ -1915,12 +1910,12 @@ app.addEventListener('submit', async (e) => {
   if (e.target.id !== 'f-comp') return;
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
+  const entrar = f.modo === 'entrar';
+  if (entrar && !String(f.codigo || '').trim()) return toast('Informe o código que a outra pessoa recebeu ao criar o espaço.');
   const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Conectando…';
   try {
-    await new Store().desbloquear(f.pin); // mesmo PIN que abre o app neste aparelho
-    await configurarComp({ owner: f.owner, repo: f.repo, token: f.token, nome: f.nome, pin: f.pin });
+    await configurarComp({ nome: f.nome, codigo: entrar ? f.codigo : null, arquivo: entrar ? null : f.arquivo });
   } catch (err) { S.comp.store.sair(); btn.disabled = false; btn.textContent = 'Conectar'; return toast(err.message, 4500); }
-  if (S.lembrado) await S.comp.store.lembrar();
   toast('Conectado. Buscando casa e viagens…');
   S.comp.dados = null; S.comp.erro = ''; render();
   await carregarComp({ forcar: true });
