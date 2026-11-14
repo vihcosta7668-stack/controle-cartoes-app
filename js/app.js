@@ -1,4 +1,5 @@
 import { Sessao, Store, StoreComp, ErroConflito, ErroLogin } from './store.js';
+import { SUPABASE } from './config.js';
 import {
   hoje as hojeISO, brl, num, dataBR, diaMes, mesCurto, difDias, addMeses, round2, cents, parseValor,
   detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
@@ -63,18 +64,19 @@ function dadosVazios(ids = ['nubank', 'itau']) {
 // ======================= acesso =======================
 function telaConfig(erro = '') {
   const cfg = sessao.cfg || {};
+  const fixo = !!(SUPABASE.url && SUPABASE.chave); // projeto já definido em js/config.js
   app.innerHTML = `<div class="acesso pilha">
     <div class="logo">${icon('card')}</div>
     <h1>Entrar no Controle de Cartões</h1>
-    <p>Seus dados ficam num banco SQL no seu projeto do <b>Supabase</b>, e cada linha só é visível para quem entrou com a conta dona dela. Este aparelho só guarda a sessão, cifrada com o seu PIN.</p>
+    ${fixo ? '<p>Entre com o seu e-mail e a sua senha e escolha um PIN para abrir o app neste aparelho.</p>' : `<p>Seus dados ficam num banco SQL no seu projeto do <b>Supabase</b>, e cada linha só é visível para quem entrou com a conta dona dela. Este aparelho só guarda a sessão, cifrada com o seu PIN.</p>
     <ol class="passos">
       <li>No Supabase, rode o arquivo <code>supabase/schema.sql</code> deste app no <i>SQL Editor</i> (uma vez por projeto).</li>
       <li>Em <i>Authentication → Users → Add user</i>, crie o seu usuário (e o da outra pessoa, se forem usar casa e viagens).</li>
       <li>Em <i>Project Settings → API</i>, copie o endereço do projeto e a chave <i>anon</i> (pública).</li>
-    </ol>
+    </ol>`}
     <form class="form card" id="f-config" autocomplete="off">
-      <label class="campo"><span>Endereço do projeto</span><input class="inp" name="url" required placeholder="https://xxxx.supabase.co" value="${esc(cfg.url || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></label>
-      <label class="campo"><span>Chave anon (pública)</span><input class="inp" name="chave" required value="${esc(cfg.chave || '')}" autocapitalize="off" spellcheck="false"></label>
+      ${fixo ? '' : `<label class="campo"><span>Endereço do projeto</span><input class="inp" name="url" required placeholder="https://xxxx.supabase.co" value="${esc(cfg.url || '')}" autocapitalize="off" spellcheck="false" inputmode="url"></label>
+      <label class="campo"><span>Chave anon (pública)</span><input class="inp" name="chave" required value="${esc(cfg.chave || '')}" autocapitalize="off" spellcheck="false"></label>`}
       <div class="lado">
         <label class="campo"><span>E-mail</span><input class="inp" name="email" type="email" required autocapitalize="off" spellcheck="false" autocomplete="username"></label>
         <label class="campo"><span>Senha</span><input class="inp" name="senha" type="password" required autocomplete="current-password"></label>

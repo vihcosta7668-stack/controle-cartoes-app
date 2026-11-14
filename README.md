@@ -20,7 +20,9 @@ O esquema completo está em `supabase/schema.sql`. Campos que o app venha a cria
 3. *Authentication → Users → Add user*: crie o seu usuário com e-mail e senha (e o da outra pessoa, se forem usar casa e viagens). Marque *Auto Confirm User*.
 4. *Authentication → Sign In / Providers*: desligue *Allow new users to sign up*, para ninguém mais criar conta no seu projeto.
 5. *Project Settings → API*: copie o endereço do projeto (`https://xxxx.supabase.co`) e a chave **anon** (pública). A chave `service_role` nunca vai no app.
-6. No app: endereço, chave anon, e-mail, senha e um PIN para este aparelho.
+6. Coloque o endereço e a chave anon em `js/config.js` e publique. A partir daí, cada aparelho só pede e-mail, senha e PIN. Com `js/config.js` vazio, a tela de entrada pede também o endereço e a chave.
+
+A chave anon fica visível no código (este repositório é público), e isso é esperado no Supabase: ela não dá acesso a nenhum dado sem login, por causa do RLS. Por isso o passo 4 (cadastro desligado) é obrigatório: com ele ligado, qualquer pessoa com a chave poderia criar uma conta no seu projeto.
 
 ### Trazer os dados da versão com GitHub
 
@@ -83,6 +85,7 @@ Em *Ajustes → Renda e compromissos* ficam os dois pagamentos do mês (adiantam
 | `js/importer.js` | junta a fatura importada com os dados existentes |
 | `js/calc.js` | faturas, previsões, quem me deve, grupos, cobranças |
 | `js/pix.js` | Pix copia e cola (BR Code) com valor |
+| `js/config.js` | endereço e chave anon do projeto do Supabase |
 | `js/store.js` | login no Supabase, chamadas às funções SQL e cifra da sessão pelo PIN |
 | `supabase/schema.sql` | tabelas, RLS e funções `carregar_*`/`salvar_*` |
 | `js/app.js`, `js/ui.js`, `css/app.css` | interface |
