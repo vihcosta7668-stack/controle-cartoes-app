@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self'; connect-src 'self' https://*.supabase.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#141518" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0f1012" media="(prefers-color-scheme: dark)">
 <title>Controle de Cartões</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -19,6 +19,7 @@
 <div id="modal-root"></div>
 <div id="toast" role="status"></div>
 <input type="file" id="arquivo" accept=".csv,.pdf,text/csv,application/pdf" hidden>
+<input type="file" id="arquivo-json" accept=".json,application/json" hidden>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>
