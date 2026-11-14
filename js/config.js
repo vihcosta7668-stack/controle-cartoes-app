@@ -4,6 +4,6 @@
 // Supabase (Authentication → Sign In / Providers → Allow new users to sign up). Nunca coloque
 // aqui a chave service_role nem a sb_secret_….
 export const SUPABASE = {
-  url: '', // ex.: https://abcdefghijklmnop.supabase.co
-  chave: '', // chave anon (eyJ…) ou publishable (sb_publishable_…)
+  url: 'https://zsxyxbigrblruqnirjxg.supabase.co',
+  chave: 'sb_publishable_v_mkPnzpOc6R35frlzv3PQ_NOW6yNkA', // publishable (pública)
 };
