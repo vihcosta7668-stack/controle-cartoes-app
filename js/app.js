@@ -5,7 +5,7 @@ import {
   detectaParcela, raizDesc, uid, slug, partes, ymd, diasNoMes,
 } from './util.js';
 import * as C from './calc.js';
-import { parseNubankCSV, parsePDFFatura, lerPaginasPDF, parseTextoLancamentos } from './parsers.js';
+import { parseNubankCSV, parsePDFFatura, lerPaginasPDF, parseTextoLancamentos, parseXlsxFatura } from './parsers.js';
 import * as PL from './planos.js';
 import { importarFatura, classificarNovo } from './importer.js';
 import { esc, icon, toast, abrirModal, fecharModal, cabecalhoModal, chipCartao, graficoBarras, ligarGraficos } from './ui.js';
@@ -1599,22 +1599,51 @@ function modalItem(vid, iid, categoria) {
 }
 
 // ---------- colar lançamentos (fatura aberta, antes de o banco liberar o arquivo) ----------
-function modalColar(cartaoPref) {
+// pre: lançamentos já lidos de uma planilha (.xlsx da fatura aberta), em vez de texto colado.
+function modalColar(cartaoPref, pre = null) {
   const d = S.dados;
   const st = { cartao: cartaoPref && cartao(cartaoPref) ? cartaoPref : (d.cartoes.find((c) => formatoFatura(c) === 'PDF') || d.cartoes[0]).id, texto: '', lidas: null, ignoradas: [], marcadas: new Set() };
+  // vencimento da planilha (ex.: 07/12, dia útil) -> fatura do app mais próxima (ex.: 05/12)
+  const vencDoApp = (c) => {
+    if (!pre?.vencimento) return null;
+    const ab = C.faturaAberta(c, S.hoje);
+    const cands = [-2, -1, 0, 1, 2, 3].map((k) => (k ? C.vencSeguinte(c, ab, k) : ab));
+    const melhor = cands.sort((a, b) => Math.abs(difDias(a, pre.vencimento)) - Math.abs(difDias(b, pre.vencimento)))[0];
+    return Math.abs(difDias(melhor, pre.vencimento)) <= 6 ? melhor : null;
+  };
   // já está no app: mesmo cartão, mesmo valor e data até 3 dias de diferença
-  const jaExiste = (x, cid) => d.lancamentos.some((l) => l.cartao === cid && l.origem !== 'previsto' && l.tipo !== 'pagamento' && cents(l.valor) === cents(x.valor) && l.data && Math.abs(difDias(l.data, x.data)) <= 3);
+  // parcela só é a mesma se for o mesmo número (a 2/3 tem a mesma data e valor da 1/3 da fatura anterior)
+  // com a planilha, a fatura de cada linha é conhecida: só conta como repetido o que está na mesma fatura
+  const jaExiste = (x, cid, venc = null) => d.lancamentos.some((l) => l.cartao === cid && (!venc || l.venc === venc) && l.origem !== 'previsto' && l.tipo !== 'pagamento' && cents(l.valor) === cents(x.valor) && l.data && Math.abs(difDias(l.data, x.data)) <= 3
+    && (!x.parcela || !l.parcela || (l.parcela.n === x.parcela.n && l.parcela.total === x.parcela.total)));
+  // palavras que identificam a compra (sem cidade, país e termos genéricos)
+  const COMUNS = new Set(['sao', 'paulo', 'paulobr', 'parauapebas', 'parauapebasbr', 'br', 'com', 'ltda', 'pag', 'compra', 'internacional', 'de', 'do', 'da', 'bill']);
+  const palavras = (t) => new Set(String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !COMUNS.has(w)));
   const ler = () => {
-    const r = parseTextoLancamentos(st.texto, S.hoje);
+    const r = pre || parseTextoLancamentos(st.texto, S.hoje);
     const c = cartao(st.cartao);
+    const vencFixo = vencDoApp(c);
     st.ignoradas = [...r.ignoradas, ...r.linhas.filter((x) => x.tipo === 'pagamento').map((x) => `${diaMes(x.data)} ${x.desc} (pagamento: use "Já paguei")`)];
+    // O que o app já prevê na fatura (parcelas e fixos) não entra de novo. A descrição do banco muda de
+    // um formato para outro (PDF abrevia, planilha junta a cidade), então compara valor e nº da parcela;
+    // cada previsto cobre uma linha só.
+    const prevs = new Map(); const usados = new Set();
+    const previstoDe = (x, venc) => {
+      if (!prevs.has(venc)) prevs.set(venc, C.resumoFatura(d, c.id, venc, S.hoje).previstas);
+      const livres = prevs.get(venc).filter((l) => !usados.has(l));
+      const p = livres.find((l) => cents(l.valor) === cents(x.valor)
+        && (x.parcela ? l.parcela && l.parcela.n === x.parcela.n && l.parcela.total === x.parcela.total : !l.parcela))
+        // gasto fixo internacional muda com o câmbio: valor até 15% diferente e uma palavra em comum
+        || (!x.parcela && livres.find((l) => !l.parcela && Math.abs(l.valor - x.valor) <= 0.15 * Math.max(l.valor, x.valor)
+          && [...palavras(l.desc)].some((w) => palavras(x.desc).has(w))));
+      if (p) usados.add(p);
+      return p;
+    };
     st.lidas = r.linhas.filter((x) => x.tipo !== 'pagamento').map((x, i) => {
-      const dup = jaExiste(x, c.id);
-      const venc = C.vencDaCompra(c, x.data);
-      // parcela 2 em diante que o app já prevê nesta fatura (mesma compra e mesmo número): não duplica
-      const parc = x.parcela && x.parcela.n > 1 && C.resumoFatura(d, c.id, venc, S.hoje).previstas
-        .some((l) => l.parcela && l.parcela.n === x.parcela.n && l.parcela.total === x.parcela.total && raizDesc(l.desc) === raizDesc(x.desc));
-      return { ...x, i, venc, motivo: dup ? 'já está no app' : (parc ? 'parcela já prevista' : '') };
+      const venc = vencFixo || C.vencDaCompra(c, x.data);
+      const dup = jaExiste(x, c.id, vencFixo);
+      const prev = !dup && previstoDe(x, venc);
+      return { ...x, i, venc, motivo: dup ? 'já está no app' : (prev ? (x.parcela ? 'parcela já prevista' : `já previsto${cents(prev.valor) !== cents(x.valor) ? ` (${brl(prev.valor)})` : ''}`) : '') };
     });
     st.marcadas = new Set(st.lidas.filter((x) => !x.motivo).map((x) => x.i));
   };
@@ -1622,15 +1651,18 @@ function modalColar(cartaoPref) {
     const c = cartao(st.cartao);
     const sel = st.lidas ? st.lidas.filter((x) => st.marcadas.has(x.i)) : [];
     const soma = round2(sel.reduce((a, x) => a + x.valor, 0));
-    m.innerHTML = `${cabecalhoModal('Colar lançamentos')}
+    const somaCompras = pre ? round2(pre.linhas.filter((x) => x.tipo !== 'pagamento').reduce((a, x) => a + x.valor, 0)) : 0;
+    m.innerHTML = `${cabecalhoModal(pre ? 'Planilha da fatura aberta' : 'Colar lançamentos')}
     <div class="form">
-      <p class="small muted" style="margin:0">Para a fatura que ainda não fechou: copie os lançamentos da tela do banco (internet banking ou app) e cole aqui. Também dá para digitar, uma compra por linha: <code>05/11 Uber 23,90</code>.</p>
+      ${pre ? `<p class="small muted" style="margin:0">${esc(pre.arquivo)}${pre.vencimento ? ` · vencimento ${dataBR(pre.vencimento)}${vencDoApp(c) && vencDoApp(c) !== pre.vencimento ? ` (no app, fatura de ${dataBR(vencDoApp(c))})` : ''}` : ''}</p>
+        ${pre.totalParcial != null ? (Math.abs(pre.totalParcial - somaCompras) < 0.01 ? `<div class="alerta ok small"><div class="grow">Compras somam ${brl(somaCompras)}, igual ao total parcial da planilha.</div></div>` : `<div class="alerta warn small"><div class="grow">Compras somam ${brl(somaCompras)}; a planilha mostra ${brl(pre.totalParcial)}.</div></div>`) : ''}`
+      : '<p class="small muted" style="margin:0">Para a fatura que ainda não fechou: copie os lançamentos da tela do banco (internet banking ou app) e cole aqui. Também dá para digitar, uma compra por linha: <code>05/11 Uber 23,90</code>. Do site do Itaú, a planilha (.xlsx) da fatura aberta entra direto pelo botão Importar.</p>'}
       <label class="campo"><span>Cartão</span><select class="inp" data-c="cartao">${d.cartoes.map((x) => `<option value="${x.id}" ${x.id === st.cartao ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select></label>
-      <label class="campo"><span>Texto</span><textarea class="inp" rows="7" data-c="texto" placeholder="02/11  UBER *TRIP  23,90&#10;03/11  MERCADO  R$ 154,30">${esc(st.texto)}</textarea></label>
-      <div><button type="button" class="btn" data-c-ler>Ler texto</button></div>
+      ${pre ? '' : `<label class="campo"><span>Texto</span><textarea class="inp" rows="7" data-c="texto" placeholder="02/11  UBER *TRIP  23,90&#10;03/11  MERCADO  R$ 154,30">${esc(st.texto)}</textarea></label>
+      <div><button type="button" class="btn" data-c-ler>Ler texto</button></div>`}
       ${st.lidas ? (st.lidas.length ? `<div>
         <div class="small" style="font-weight:600;margin-bottom:4px">${st.lidas.length} lançamento${st.lidas.length > 1 ? 's' : ''} encontrado${st.lidas.length > 1 ? 's' : ''} · confira antes de lançar</div>
-        <ul class="lista">${st.lidas.map((x) => `<li><label class="check"><input type="checkbox" data-c-sel="${x.i}" ${st.marcadas.has(x.i) ? 'checked' : ''}></label>
+        <ul class="lista fechamento">${st.lidas.map((x) => `<li><label class="check"><input type="checkbox" data-c-sel="${x.i}" ${st.marcadas.has(x.i) ? 'checked' : ''}></label>
           <div class="desc"><b>${esc(x.desc)}</b><small>${diaMes(x.data)} · fatura ${diaMes(x.venc)}${x.parcela ? ` · parcela ${x.parcela.n}/${x.parcela.total}` : ''}${x.motivo ? ` · <span class="tag warn">${x.motivo}</span>` : ''}</small></div>
           <div class="valor">${brl(x.valor)}</div></li>`).join('')}</ul></div>` : '<div class="alerta warn small">Não encontrei nenhuma linha com data e valor. Confira se o texto tem a data (dd/mm) e o valor (ex.: 23,90).</div>') : ''}
       ${st.ignoradas.length ? `<details class="small"><summary class="muted">${st.ignoradas.length} linha${st.ignoradas.length > 1 ? 's' : ''} não aproveitada${st.ignoradas.length > 1 ? 's' : ''}</summary><ul class="tiny muted" style="margin:6px 0 0;padding-left:18px">${st.ignoradas.slice(0, 30).map((x) => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
@@ -1638,6 +1670,7 @@ function modalColar(cartaoPref) {
     </div>
     <div class="modal-f"><button type="button" class="btn" data-act="fechar-modal">Cancelar</button><button type="button" class="btn pri" data-c-ok ${sel.length ? '' : 'disabled'}>Lançar ${sel.length || ''} ${sel.length ? `(${brl(soma)})` : ''}</button></div>`;
   };
+  if (pre) ler();
   abrirModal('', {
     largo: true,
     aoMontar: (m) => {
@@ -1767,7 +1800,15 @@ async function iniciarImport(file, cartaoPref) {
 // ======================= eventos globais =======================
 const arquivo = document.getElementById('arquivo');
 let cartaoImport = null;
-arquivo.addEventListener('change', () => { const f = arquivo.files[0]; arquivo.value = ''; if (f) iniciarImport(f, cartaoImport); });
+arquivo.addEventListener('change', () => { const f = arquivo.files[0]; arquivo.value = ''; if (!f) return; if (/\.xlsx$/i.test(f.name)) abrirPlanilha(f, cartaoImport); else iniciarImport(f, cartaoImport); });
+// Planilha da fatura aberta (site do Itaú): vai para a mesma conferência do "Colar lançamentos".
+async function abrirPlanilha(f, cartaoPref) {
+  let r;
+  try { r = await parseXlsxFatura(await f.arrayBuffer()); } catch (err) { return toast(err.message || 'Não consegui ler essa planilha.', 4500); }
+  const reNome = { itau: /ita/i, nubank: /nu/i, mercadopago: /mercado/i }[r.banco];
+  const cid = (reNome && (S.dados.cartoes.find((c) => c.id === r.banco) || S.dados.cartoes.find((c) => reNome.test(c.nome))))?.id || cartaoPref;
+  modalColar(cid, { ...r, arquivo: f.name });
+}
 // dados.json da versão com GitHub: vira as tabelas no Supabase.
 const arquivoJson = document.getElementById('arquivo-json');
 arquivoJson.addEventListener('change', async () => {
