@@ -399,3 +399,4 @@ details.conferir > summary .tag { margin-left: 6px; }
 }
 .logo-mini { display: inline-grid; place-items: center; } .logo-mini svg { width: 22px; height: 22px; color: #e0c06a; }
 .cartoes.mini { padding-top: 6px; padding-bottom: 8px; }
+.chip i { box-shadow: inset 0 0 0 1px rgba(128,128,128,.45); }

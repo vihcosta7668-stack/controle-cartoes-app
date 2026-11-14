@@ -49,7 +49,7 @@ async function manterConectado(sim) {
 const CARTOES_MODELO = {
   nubank: { id: 'nubank', nome: 'Nubank', fechamento: 11, vencimento: 18, cor: '#820ad1', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Nubank' } },
   itau: { id: 'itau', nome: 'Itaú', fechamento: 29, vencimento: 5, cor: '#ec7000', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Itaú' } },
-  mercadopago: { id: 'mercadopago', nome: 'Mercado Pago', fechamento: 5, vencimento: 10, cor: '#00a6e0', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Mercado Pago' } },
+  mercadopago: { id: 'mercadopago', nome: 'Mercado Pago', fechamento: 5, vencimento: 10, cor: '#232a38', pix: { chave: '', tipo: 'aleatoria', nome: '', cidade: '', banco: 'Mercado Pago' } },
 };
 const formatoFatura = (c) => (c.id === 'nubank' ? 'CSV' : 'PDF');
 function dadosVazios(ids = ['nubank', 'itau']) {
